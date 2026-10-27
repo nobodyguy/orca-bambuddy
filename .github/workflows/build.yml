@@ -1,0 +1,39 @@
+name: Build
+
+# Tests and the wheel artifact for every push and pull request. Releases: release.yml.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        # OrcaSlicer 2.5.0-alpha embeds CPython 3.12; the others keep the code portable.
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  wheel:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        run: python tools/build_wheel.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orca-bambuddy-wheel
+          path: dist/*.whl
+          if-no-files-found: error

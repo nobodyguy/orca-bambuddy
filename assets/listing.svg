@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14302f"/>
+      <stop offset="1" stop-color="#1c2326"/>
+    </linearGradient>
+    <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M64 0H0V64" fill="none" stroke="#ffffff" stroke-opacity="0.045" stroke-width="2"/>
+    </pattern>
+  </defs>
+
+  <!-- background -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#grid)"/>
+
+  <!-- sliced cube (isometric, built from layers) -->
+  <g transform="translate(-40 70)">
+    <polygon points="300,200 456,290 300,380 144,290" fill="#4db6ac"/>
+    <polygon points="144,290 300,380 300,560 144,470" fill="#00897b"/>
+    <polygon points="300,380 456,290 456,470 300,560" fill="#00695c"/>
+    <g stroke="#004d40" stroke-width="5" stroke-linecap="round" opacity="0.85">
+      <line x1="144" y1="320" x2="300" y2="410"/><line x1="300" y1="410" x2="456" y2="320"/>
+      <line x1="144" y1="350" x2="300" y2="440"/><line x1="300" y1="440" x2="456" y2="350"/>
+      <line x1="144" y1="380" x2="300" y2="470"/><line x1="300" y1="470" x2="456" y2="380"/>
+      <line x1="144" y1="410" x2="300" y2="500"/><line x1="300" y1="500" x2="456" y2="410"/>
+      <line x1="144" y1="440" x2="300" y2="530"/><line x1="300" y1="530" x2="456" y2="440"/>
+    </g>
+    <polyline points="144,290 300,200 456,290" fill="none" stroke="#b2dfdb" stroke-width="5" stroke-linejoin="round"/>
+  </g>
+
+  <!-- flow arrow -->
+  <line x1="486" y1="420" x2="604" y2="420" stroke="#80cbc4" stroke-width="16" stroke-linecap="round"
+        stroke-dasharray="2 34"/>
+  <polygon points="614,390 652,420 614,450" fill="#80cbc4"/>
+
+  <!-- printer -->
+  <rect x="668" y="250" width="270" height="320" rx="24" fill="#263238" stroke="#e0e0e0" stroke-width="14"/>
+  <rect x="694" y="276" width="218" height="214" rx="10" fill="#102027"/>
+  <line x1="694" y1="306" x2="912" y2="306" stroke="#90a4ae" stroke-width="8" stroke-linecap="round"/>
+  <rect x="780" y="294" width="46" height="34" rx="6" fill="#26a69a"/>
+  <polygon points="793,328 813,328 803,346" fill="#26a69a"/>
+  <line x1="803" y1="346" x2="803" y2="410" stroke="#4db6ac" stroke-width="4" stroke-dasharray="6 8"/>
+  <rect x="782" y="418" width="42" height="47" rx="4" fill="#4db6ac"/>
+  <g stroke="#00695c" stroke-width="4"><line x1="782" y1="433" x2="824" y2="433"/><line x1="782" y1="448" x2="824" y2="448"/></g>
+  <line x1="712" y1="470" x2="894" y2="470" stroke="#90a4ae" stroke-width="10" stroke-linecap="round"/>
+  <line x1="702" y1="530" x2="800" y2="530" stroke="#546e7a" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="898" cy="530" r="12" fill="#26a69a"/>
+
+  <!-- title -->
+  <g font-family="Ubuntu Sans, Noto Sans, DejaVu Sans, sans-serif" text-anchor="middle">
+    <text x="512" y="778" font-size="132" font-weight="700" fill="#ffffff">Bambuddy</text>
+    <text x="512" y="862" font-size="64" font-weight="500" fill="#80cbc4">for OrcaSlicer</text>
+    <text x="512" y="944" font-size="40" font-weight="400" fill="#b0bec5" letter-spacing="2">PRINT · QUEUE · STORE</text>
+  </g>
+</svg>

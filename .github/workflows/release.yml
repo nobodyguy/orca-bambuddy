@@ -1,0 +1,76 @@
+name: Release
+
+# Runs when a GitHub release is published (tag vX.Y.Z matching __version__ in
+# src/orca_bambuddy/orca_adapter.py): tests, attaches the wheel to the release and, when the
+# repository variable ORCACLOUD_PUBLISH is "true", publishes the same wheel as a new version of
+# the plugin on OrcaCloud.
+#
+# OrcaCloud publishing uses trusted publishing (GitHub OIDC), so there are no secrets: connect
+# this repository to the plugin first (OrcaCloud > Plugins > Shared Plugins > the plugin > Edit
+# plugin > GitHub publishing). The publish step follows the workflow from OrcaCloud's help guide
+# (https://cloud.orcaslicer.com/wiki/, "Publish from GitHub").
+#
+# Create the release by hand (GitHub UI or `gh release create`): a release created by another
+# workflow with GITHUB_TOKEN does not start this one.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write  # attach the wheel to the release
+  id-token: write  # OIDC token for OrcaCloud
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      PLUGIN_FILES: dist/orca_bambuddy_any.whl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+
+      - name: Tag matches plugin version
+        run: |
+          version=$(python -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/orca_bambuddy/orca_adapter.py').read_text()).group(1))")
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "OrcaCloud needs an X.Y.Z version, got $version"; exit 1; }
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME does not match __version__ $version"; exit 1; }
+
+      - name: Build wheel
+        run: python tools/build_wheel.py
+
+      - name: Attach wheel to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" $PLUGIN_FILES --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Publish release to OrcaCloud
+        if: vars.ORCACLOUD_PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=orcacloud" | jq -r .value)"
+          version="${GITHUB_REF_NAME#v}"
+          changelog="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" | head -c 4000)"
+          metadata="$(jq -cn --arg version "$version" --arg changelog "$changelog" \
+            '{version: $version} + (if $changelog == "" then {} else {changelog: $changelog} end)')"
+          args=(-F "metadata=$metadata")
+          shopt -s nullglob
+          for file in $PLUGIN_FILES; do
+            args+=(-F "files=@$file")
+          done
+          if [ "${#args[@]}" -eq 1 ]; then
+            echo "No plugin files matched: $PLUGIN_FILES" >&2
+            exit 1
+          fi
+          status="$(curl -sS -o response.json -w '%{http_code}' \
+            -H "Authorization: Bearer $oidc_token" \
+            "${args[@]}" \
+            https://api.orcaslicer.com/api/v1/plugin-publish/releases)"
+          cat response.json
+          echo
+          [ "$status" = "201" ]
