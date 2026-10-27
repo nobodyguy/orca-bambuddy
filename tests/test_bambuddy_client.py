@@ -136,6 +136,16 @@ class ClientTest(unittest.TestCase):
         self.assertIn("rejected the service token", e.exception.message)
         self.assertNoSecrets(e.exception.message)
 
+    def test_http_to_https_redirect_names_the_https_url(self):
+        host = self.server.url.split("://", 1)[1]
+        self.server.route("GET", "/api/v1/updates/version", status=301, body="",
+                          headers={"Location": f"https://{host}/api/v1/updates/version"})
+        with self.assertRaises(BambuddyError) as e:
+            self.client().version()
+        self.assertEqual(e.exception.kind, "bad_url")
+        self.assertEqual(e.exception.message, f"The server accepts only HTTPS. Change the Bambuddy URL to https://{host}.")
+        self.assertEqual(len(self.server.requests), 1)  # not followed
+
     def test_other_redirect_suggests_final_address(self):
         self.server.route("GET", "/api/v1/updates/version", status=301, body="", headers={"Location": "https://bambuddy.example.com/api/v1/updates/version"})
         with self.assertRaises(BambuddyError) as e:

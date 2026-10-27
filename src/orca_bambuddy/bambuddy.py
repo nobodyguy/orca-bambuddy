@@ -321,6 +321,13 @@ class BambuddyClient:
         if 300 <= status < 400:
             if _is_cloudflare_access_redirect(location):
                 return self._cloudflare_error(status)
+            here, there = urllib.parse.urlsplit(self.base_url), urllib.parse.urlsplit(location)
+            if here.scheme == "http" and there.scheme == "https" and here.hostname == there.hostname:
+                # Typical behind Cloudflare or a reverse proxy: plain HTTP is redirected to HTTPS.
+                secure = urllib.parse.urlunsplit(("https", there.netloc, "", "", ""))
+                return BambuddyError(
+                    "bad_url", f"The server accepts only HTTPS. Change the Bambuddy URL to {secure}.", status
+                )
             return BambuddyError(
                 "bad_url",
                 f"The server redirected to {redact(location) or 'another address'}. If that is the login "
