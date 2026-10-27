@@ -230,6 +230,13 @@ class AgentTest(ServiceTestBase):
         self.assertEqual(updates[-1][0], bd.STAGE_FINISHED)
         self.assertIn(b'filename="cube.gcode.3mf"', self.state["files"][1])
 
+    def test_name_from_print_dialog_wins_over_makerworld_title(self):
+        self.service.agent.job_titles["bambuddy-00M01"] = "mesic_maglajz"
+        code, _ = self.run_job(project_name="LALuna2")
+        self.assertEqual(code, bd.OK)
+        self.assertIn(b'filename="mesic_maglajz.gcode.3mf"', self.state["files"][1])
+        self.assertNotIn("bambuddy-00M01", self.service.agent.job_titles)
+
     def test_send_button_never_prints_by_default(self):
         seen = []
         code, _ = self.run_job("send", choose=lambda default: seen.append(default) or default)

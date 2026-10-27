@@ -259,9 +259,18 @@ class BambuddyAgent(orca.printer_agent.PrinterAgentBase):
         target = self.service.printer_name(params.dev_id)
 
         def choose(default):
-            return choose_action(svc.job_name_from_params(params), target, default, cancelled)
+            title = self.service.agent.job_titles.get(params.dev_id)
+            return choose_action(svc.job_name_from_params(params, title), target, default, cancelled)
 
         return self.service.agent_job(kind, params, update, cancelled, choose)
+
+    def on_lifecycle_event(self, event, ctx):
+        # OrcaSlicer raises these on the job thread right before start_local_print() /
+        # start_send_gcode_to_sdcard(), with the job name from its print dialog. PrintParams
+        # does not carry that name for MakerWorld projects (it holds the MakerWorld title).
+        if event in (orca.LifecycleEvent.PrintJobStarted, orca.LifecycleEvent.SendJobStarted):
+            if ctx.device_id.startswith(bd.DEV_ID_PREFIX) and ctx.name:
+                self.service.agent.job_titles[ctx.device_id] = ctx.name
 
     def start_send_gcode_to_sdcard(self, params, update_fn, cancel_fn, wait_fn):
         if params.project_name == "verify_job":

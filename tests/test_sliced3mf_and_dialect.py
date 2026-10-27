@@ -131,6 +131,11 @@ class DialectTest(unittest.TestCase):
         self.assertEqual(job_name_from_params(SimpleNamespace(project_name="cube", filename="/tmp/x/.123.0.3mf")), "cube.gcode.3mf")
         self.assertEqual(job_name_from_params(SimpleNamespace(project_name="a:b/c?", filename="")), "a_b_c_.gcode.3mf")
         self.assertEqual(job_name_from_params(SimpleNamespace(project_name="", task_name="", filename="/t/plate.gcode.3mf")), "plate.gcode.3mf")
+        # MakerWorld project: OrcaSlicer puts the MakerWorld title into project_name; the name
+        # from the print dialog (PrintJobStarted event) wins.
+        mw = SimpleNamespace(project_name="LALuna2", filename="/tmp/x/.1.0.3mf")
+        self.assertEqual(job_name_from_params(mw, "mesic_maglajz"), "mesic_maglajz.gcode.3mf")
+        self.assertEqual(job_name_from_params(mw, ""), "LALuna2.gcode.3mf")
 
 
 if __name__ == "__main__":

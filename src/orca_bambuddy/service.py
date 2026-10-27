@@ -883,7 +883,7 @@ class Service:
             label=name,
             plate=plate if plate > 0 else None,
             options=bd.queue_options(params) if kind == "print" else {},
-            name=job_name_from_params(params),
+            name=job_name_from_params(params, self.agent.job_titles.pop(dev, None)),
         )
 
         events: queue.Queue = queue.Queue()
@@ -918,15 +918,20 @@ class Service:
         return bd.OK
 
 
-def job_name_from_params(params) -> str:
-    """The job's name in Bambuddy: OrcaSlicer's project/task name, not its temp file name,
-    with the characters a printer's SD card cannot store replaced."""
-    name = ""
+def job_name_from_params(params, title: str | None = None) -> str:
+    """The job's name in Bambuddy, with the characters a printer's SD card cannot store replaced.
+
+    ``title`` is the name shown (and editable) in OrcaSlicer's print dialog, taken from the
+    PrintJobStarted/SendJobStarted event. It is preferred over ``params.project_name``, which
+    OrcaSlicer replaces with the MakerWorld model title for projects downloaded from MakerWorld.
+    """
+    name = (title or "").strip()
     for attr in ("project_name", "task_name"):
+        if name:
+            break
         value = (getattr(params, attr, "") or "").strip()
         if value and value != "verify_job":
             name = value
-            break
     name = name or os.path.basename(getattr(params, "filename", "") or "") or "print"
     for suffix in (".gcode.3mf", ".3mf"):
         if name.lower().endswith(suffix):
@@ -946,6 +951,7 @@ class AgentState:
     next_announce: float = 0.0
     next_push: float = 0.0
     callbacks: dict = field(default_factory=dict)
+    job_titles: dict = field(default_factory=dict)  # dev_id -> name from the print dialog
 
     def emit(self, key: str, *args) -> None:
         fn = self.callbacks.get(key)
