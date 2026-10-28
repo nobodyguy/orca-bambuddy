@@ -40,37 +40,56 @@ class LoadTimeRequestTest(unittest.TestCase):
         self.addCleanup(sys.modules.pop, "orca_bambuddy.orca_adapter", None)
         self.addCleanup(sys.modules.pop, "orca", None)
 
-    def declare(self, request_permissions, settings=None, state=None):
-        """Load the adapter as if installed as a local wheel in a data dir under self.storage."""
+    LOCAL = ("orca_bambuddy_any.whl",)
+    CLOUD = ("_subscribed", "user-1", "3798583d-222d-40a1-8746-36049cfaf834")
+    OLD_LOCAL = {"plugin_key": "orca_bambuddy-0.1.0-py3-none-any", "capability": "Bambuddy printer agent",
+                 "plugin_version": "0.1.0", "cap_config": {"base_url": "http://old"}}
+
+    def install(self, layout=LOCAL, settings=None, others=(), state=None):
+        """Lay out a data dir under self.storage as OrcaSlicer does for this installation.
+
+        Returns this installation's plugin key and the path of its orca_adapter.py."""
         plugins = os.path.join(self.storage, "orca_plugins")
-        module_file = os.path.join(plugins, "orca_bambuddy_any.whl", "__whl_extracted__", "orca_bambuddy", "orca_bambuddy", "orca_adapter.py")
-        os.makedirs(os.path.join(plugins, "plugin_data", "orca_bambuddy_any"))
-        entries = [{"plugin_key": "orca_bambuddy-0.1.0-py3-none-any", "capability": "Bambuddy printer agent", "cap_config": {"base_url": "http://old"}}]
+        key = layout[-1][: -len(".whl")] if layout[-1].endswith(".whl") else layout[-1]
+        storage = os.path.join(plugins, "plugin_data", *layout[:-1], key)
+        os.makedirs(storage, exist_ok=True)
+        entries = list(others)
         if settings is not None:
-            entries.append({"plugin_key": "orca_bambuddy_any", "capability": "Bambuddy printer agent", "cap_config": settings})
+            entries.append({"plugin_key": key, "capability": "Bambuddy printer agent", "cap_config": settings})
         with open(os.path.join(plugins, "config.json"), "w") as f:
             json.dump({"config": entries}, f)
         if state is not None:
-            with open(os.path.join(plugins, "plugin_data", "orca_bambuddy_any", "state.json"), "w") as f:
+            with open(os.path.join(storage, "state.json"), "w") as f:
                 json.dump({"permission_targets": state}, f)
+        return key, os.path.join(plugins, *layout, "__whl_extracted__", "orca_bambuddy", "orca_bambuddy", "orca_adapter.py")
+
+    def adapter_at(self, module_file, request_permissions=lambda **kw: None):
+        """Import orca_adapter with a fake orca module, as if loaded from module_file."""
 
         def storage():
             raise RuntimeError("plugin.storage() must be called from a plugin callback")  # as in 2.5.0-beta
 
         orca = fake_orca(self.storage, request_permissions)
         orca.host.plugin.storage = storage
-        with mock.patch.dict(sys.modules, {"orca": orca}):
-            sys.modules.pop("orca_bambuddy.orca_adapter", None)
-            adapter = importlib.import_module("orca_bambuddy.orca_adapter")
-            with mock.patch.object(adapter, "__file__", module_file), mock.patch.object(
-                adapter.load_permission_targets, "__defaults__", (module_file,)
-            ):
-                return adapter.declare_permissions()
+        patcher = mock.patch.dict(sys.modules, {"orca": orca})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sys.modules.pop("orca_bambuddy.orca_adapter", None)
+        adapter = importlib.import_module("orca_bambuddy.orca_adapter")
+        location = mock.patch.object(adapter.plugin_location, "__defaults__", (module_file,))
+        location.start()
+        self.addCleanup(location.stop)
+        return adapter
+
+    def declare(self, request_permissions, **install):
+        _, module_file = self.install(**install)
+        return self.adapter_at(module_file, request_permissions).declare_permissions()
 
     def test_beta_asks_for_temp_tree_export_folder_threads_and_host(self):
         calls = []
         origin = self.declare(
-            lambda **kw: calls.append(kw), settings={"base_url": "http://Bambuddy.lan:8000/", "export_folder": "/data/exports"}
+            lambda **kw: calls.append(kw), settings={"base_url": "http://Bambuddy.lan:8000/", "export_folder": "/data/exports"},
+            others=[self.OLD_LOCAL],
         )
         self.assertEqual(origin, "http://bambuddy.lan")
         self.assertEqual(
@@ -88,11 +107,49 @@ class LoadTimeRequestTest(unittest.TestCase):
         calls = []
         self.assertEqual(self.declare(lambda **kw: calls.append(kw), state={"base_url": "https://bb.example"}), "https://bb.example")
 
+    def test_state_json_copy_of_an_orcacloud_installation(self):
+        calls = []
+        origin = self.declare(lambda **kw: calls.append(kw), layout=self.CLOUD, state={"base_url": "https://bb.example"})
+        self.assertEqual(origin, "https://bb.example")
+
+    def test_switch_from_local_to_orcacloud_keeps_the_host(self):
+        local = {"plugin_key": "orca_bambuddy_any", "capability": "Bambuddy printer agent", "plugin_version": "0.2.0",
+                 "cap_config": {"base_url": "https://farma.example"}}
+        calls = []
+        origin = self.declare(lambda **kw: calls.append(kw), layout=self.CLOUD, others=[self.OLD_LOCAL, local])
+        self.assertEqual(origin, "https://farma.example")
+
+    def test_own_settings_win_over_other_installations(self):
+        calls = []
+        self.assertEqual(self.declare(lambda **kw: calls.append(kw), settings={"base_url": ""}, others=[self.OLD_LOCAL]), "")
+
+    def test_newest_other_installation_wins(self):
+        newer = dict(self.OLD_LOCAL, plugin_key="orca_bambuddy_any", plugin_version="0.10.0", cap_config={"base_url": "https://new.example"})
+        older_but_later = dict(self.OLD_LOCAL, plugin_key="x", plugin_version="0.9.0", cap_config={"base_url": "https://old.example"})
+        calls = []
+        origin = self.declare(lambda **kw: calls.append(kw), layout=self.CLOUD, others=[newer, older_but_later])
+        self.assertEqual(origin, "https://new.example")
+
     def test_beta_without_saved_url_asks_for_no_host(self):
         calls = []
         self.assertEqual(self.declare(lambda **kw: calls.append(kw)), "")
         self.assertEqual((calls[0]["network"], calls[0]["process"]), ([], []))
         self.assertEqual(calls[0]["fs_read"][1], os.path.join(svc.export_folder({}), "*"))
+
+    def test_settings_of_another_installation_are_adopted_once(self):
+        _, module_file = self.install(layout=self.CLOUD, others=[self.OLD_LOCAL])
+        adapter = self.adapter_at(module_file)
+        saved = []
+        agent = types.SimpleNamespace(save_config=lambda text: saved.append(json.loads(text)) or True)
+        with mock.patch.object(adapter.RUNTIME.host, "notify") as notify:
+            adapter.adopt_settings_of_other_installation(agent)
+        self.assertEqual(saved[0]["base_url"], "http://old")
+        notify.assert_called_once()
+
+        saved.clear()
+        self.install(layout=self.CLOUD, settings={"base_url": ""}, others=[self.OLD_LOCAL])  # it has its own now
+        adapter.adopt_settings_of_other_installation(agent)
+        self.assertEqual(saved, [])
 
     def test_alpha_signature_means_unaudited_threads(self):
         def alpha(fs_read=()):  # 2.5.0-alpha: fs_read only

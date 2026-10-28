@@ -179,8 +179,19 @@ so the plugin is not presented as an official product of either.
 - A versioned wheel name would therefore reset settings and break preset references on every
   update. The build writes `orca_bambuddy_any.whl`; verified in the AppImage, the plugin loads
   under key `orca_bambuddy_any`.
-- Switching between a local install and an OrcaCloud subscription changes the key, so settings
-  have to be entered again once.
+- Switching between a local install and an OrcaCloud subscription changes the key, which used to
+  mean empty settings. (A user who installed 0.3.0 from OrcaCloud next to the local 0.2.0
+  lost them.) Now, while an installation has no `config.json` entry of its own,
+  `saved_agent_settings` uses another installation's "Bambuddy printer agent" entry: the highest
+  `plugin_version`, then the last saved. The load-time permission request uses it, so the host
+  is asked for on the first start, and `adopt_settings_of_other_installation` saves it as this
+  installation's own in the agent's `on_load`. `plugin_location` finds the key and the storage
+  folder from the module path. A cloud plugin is extracted to
+  `orca_plugins/_subscribed/<user>/<uuid>/` and stores in `plugin_data/_subscribed/<user>/<uuid>`
+  (`PluginManager::get_storage_dir`). Verified: a dry run against a real OrcaCloud install, and a
+  switch between two local installs in the 2.5.0-beta AppImage (settings adopted, host in the
+  first prompt, no restart). An actual OrcaCloud install needs an OrcaCloud login, so it was not
+  run headless.
 - OrcaCloud (help guide at cloud.orcaslicer.com/wiki, read 2026-10-27):
   - uploads must be `.py`/`.whl` with a target-OS suffix (`_any`, `_linux_x86_64`, …), at most 20
     files of 100 MB;
@@ -284,7 +295,7 @@ On the wire it is checked by the unit tests only; there was no real proxy to tes
 
 ## Verification log
 
-Automated (`python3 -m unittest discover -s tests`): 118 tests, 5 of them live tests that skip
+Automated (`python3 -m unittest discover -s tests`): 123 tests, 5 of them live tests that skip
 without `BAMBUDDY_TEST_URL`. They cover:
 - the REST client against a scripted HTTP server: headers, every error class including Cloudflare
   redirect, 403 and 413, timeouts, refused connections, multipart streaming, cancel, camera token

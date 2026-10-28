@@ -168,36 +168,91 @@ def launch_command(url: str) -> tuple[list[str] | None, str]:
     return command, str(command)
 
 
-def load_permission_targets(module_file: str = __file__) -> dict:
-    """The Bambuddy URL and export folder, before the capabilities exist.
+def plugin_location(module_file: str = __file__) -> tuple[str, str, str] | None:
+    """(orca_plugins folder, plugin key, storage folder) of this installation.
 
-    orca.host.plugin.storage() is not available while the plugin loads (2.5.0-beta), so the
-    folders are found from this file's path: a local wheel is extracted to
-    <data dir>/orca_plugins/<key>.whl/__whl_extracted__/..., and its plugin key is the wheel's
-    stem. Read first from OrcaSlicer's plugin config store (orca_plugins/config.json), else
-    from the copy the service keeps in plugin_data/<key>/state.json.
+    Found from this file's path, because orca.host.plugin.storage() is not available while
+    the plugin loads (2.5.0-beta). A local wheel is extracted to
+    orca_plugins/<key>.whl/__whl_extracted__/ (key: the wheel's stem), an OrcaCloud one to
+    orca_plugins/_subscribed/<user>/<key>/__whl_extracted__/ (key: its UUID). Their storage
+    folders are plugin_data/<key> and plugin_data/_subscribed/<user>/<key>
+    (PluginManager::get_storage_dir).
     """
     parts = os.path.normpath(os.path.abspath(module_file)).split(os.sep)
     if "__whl_extracted__" not in parts:
-        return {}
+        return None
     i = parts.index("__whl_extracted__")
-    key = parts[i - 1][: -len(".whl")] if parts[i - 1].endswith(".whl") else parts[i - 1]
-    plugins_dir = os.sep.join(parts[: i - 1])
-    while plugins_dir and not os.path.isfile(os.path.join(plugins_dir, "config.json")):
-        parent = os.path.dirname(plugins_dir)
-        if parent == plugins_dir:
-            return {}
-        plugins_dir = parent
+    if i >= 3 and parts[i - 3] == "_subscribed":
+        root, key = parts[: i - 3], parts[i - 1]
+        storage = [*root, "plugin_data", "_subscribed", parts[i - 2], key]
+    else:
+        folder = parts[i - 1]
+        root, key = parts[: i - 1], folder[: -len(".whl")] if folder.endswith(".whl") else folder
+        storage = [*root, "plugin_data", key]
+    return os.sep.join(root), key, os.sep.join(storage)
+
+
+def saved_agent_settings(plugins_dir: str, key: str) -> tuple[dict | None, str | None]:
+    """(settings, plugin key they belong to) from OrcaSlicer's plugin config store.
+
+    This installation's own settings, or, while it has none, those of another installation
+    of this plugin: a local wheel and an OrcaCloud subscription have different plugin keys,
+    so switching between them would otherwise start from empty settings. Of several, the one
+    with the highest plugin version, then the one saved last. (None, None) when there are
+    none. Raises OSError or ValueError when the store cannot be read.
+    """
+    with open(os.path.join(plugins_dir, "config.json"), encoding="utf-8") as f:
+        entries = [e for e in json.load(f).get("config") or [] if e.get("capability") == AGENT_CAPABILITY]
+    own = [e for e in entries if e.get("plugin_key") == key]
+    if own:
+        return own[-1].get("cap_config") or {}, key
+    others = [(n, e) for n, e in enumerate(entries) if isinstance(e.get("cap_config"), dict) and e["cap_config"].get("base_url")]
+    if not others:
+        return None, None
+
+    def rank(item):
+        n, entry = item
+        version = tuple(int(p) if p.isdigit() else 0 for p in str(entry.get("plugin_version") or "").split("."))
+        return version, n
+
+    best = max(others, key=rank)[1]
+    return best["cap_config"], best.get("plugin_key")
+
+
+def load_permission_targets() -> dict:
+    """The Bambuddy URL and export folder, before the capabilities exist: from the plugin
+    config store (see saved_agent_settings), else from the copy the service keeps in
+    state.json."""
+    location = plugin_location()
+    if location is None:
+        return {}
+    plugins_dir, key, storage = location
     try:
-        with open(os.path.join(plugins_dir, "config.json"), encoding="utf-8") as f:
-            entries = json.load(f).get("config") or []
-        for entry in entries:
-            if entry.get("plugin_key") == key and entry.get("capability") == AGENT_CAPABILITY:
-                cfg = svc.merge_settings(entry.get("cap_config"))
-                return {"base_url": cfg["base_url"], "export_folder": svc.export_folder(cfg)}
+        cfg, _ = saved_agent_settings(plugins_dir, key)
+        if cfg is not None:
+            cfg = svc.merge_settings(cfg)
+            return {"base_url": cfg["base_url"], "export_folder": svc.export_folder(cfg)}
     except (OSError, ValueError, AttributeError) as e:
         log.info("Plugin config store not readable at load (%s); using state.json", e)
-    return svc.StateStore(os.path.join(plugins_dir, "plugin_data", key)).data.get("permission_targets") or {}
+    return svc.StateStore(storage).data.get("permission_targets") or {}
+
+
+def adopt_settings_of_other_installation(agent) -> None:
+    """Save another installation's settings as this one's while it has none of its own,
+    the same ones load_permission_targets used for the permission request."""
+    location = plugin_location()
+    if location is None:
+        return
+    plugins_dir, key, _ = location
+    try:
+        cfg, source = saved_agent_settings(plugins_dir, key)
+    except (OSError, ValueError, AttributeError):
+        return
+    if cfg is None or source == key:
+        return
+    if agent.save_config(json.dumps(svc.merge_settings(cfg))):
+        log.info("Settings copied from the plugin installation %s", source)
+        RUNTIME.host.notify("info", "Bambuddy: settings copied from the other installation of this plugin.")
 
 
 def declare_permissions() -> str | None:
@@ -287,6 +342,7 @@ class BambuddyAgent(orca.printer_agent.PrinterAgentBase):
     def on_load(self):
         self.service = RUNTIME.attach()
         RUNTIME.agent = self
+        adopt_settings_of_other_installation(self)
         RUNTIME.reload_config()
 
     def on_unload(self):

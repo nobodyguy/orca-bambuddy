@@ -72,6 +72,10 @@ printer per send.
 2. In OrcaSlicer open **☰ menu > Plugins**, open the arrow next to **Install plugin**, choose
    **Install local plugin** and pick the `.whl` file.
 3. Tick **Activate** next to *orca-bambuddy*, then restart OrcaSlicer.
+
+OrcaSlicer keeps a local install and an OrcaCloud subscription apart, each with its own settings.
+When you switch from one to the other, the new one takes over the old one's settings the first
+time it starts, and a notification says so. Deactivate or remove the old one afterwards.
 4. The first time the plugin starts, OrcaSlicer asks for permissions. Answer **Yes**: the plugin
    does all network and file work in background threads so the slicer never freezes. OrcaSlicer
    remembers the answers until you install a new version.
@@ -273,7 +277,7 @@ OrcaSlicer's data directory (`<data dir>`) is `%APPDATA%\OrcaSlicer` on Windows,
 | What | Where |
 |---|---|
 | Settings, **including the API key, Cloudflare secret and extra headers, in plain text** | `<data dir>/orca_plugins/config.json` (OrcaSlicer's plugin configuration store) |
-| Printer remembered per preset, hashes of uploaded files | `<data dir>/orca_plugins/plugin_data/<plugin key>/state.json` |
+| Printer remembered per preset, hashes of uploaded files | `<data dir>/orca_plugins/plugin_data/<plugin key>/state.json` (OrcaCloud: `plugin_data/_subscribed/<user>/<plugin key>/state.json`) |
 | The access code you typed per printer | OrcaSlicer's own `OrcaSlicer.conf` |
 | Permissions granted to the plugin | `<data dir>/orca_plugins/<plugin folder>/.install_state.json` |
 | A copy of the Bambuddy URL and export folder, for the permission request at load (fallback) | `<data dir>/orca_plugins/plugin_data/<plugin key>/state.json` |
