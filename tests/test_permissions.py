@@ -79,6 +79,8 @@ class LoadTimeRequestTest(unittest.TestCase):
                 "fs_read": [os.path.join(svc.orca_model_temp_dir(), "*"), os.path.join("/data/exports", "*")],
                 "threading": True,
                 "network": ["http://bambuddy.lan"],
+                "process": [str(["open" if sys.platform == "darwin" else "xdg-open", "http://Bambuddy.lan:8000/"])]
+                if sys.platform != "win32" else ["http://Bambuddy.lan:8000/"],
             }],
         )
 
@@ -89,7 +91,7 @@ class LoadTimeRequestTest(unittest.TestCase):
     def test_beta_without_saved_url_asks_for_no_host(self):
         calls = []
         self.assertEqual(self.declare(lambda **kw: calls.append(kw)), "")
-        self.assertEqual(calls[0]["network"], [])
+        self.assertEqual((calls[0]["network"], calls[0]["process"]), ([], []))
         self.assertEqual(calls[0]["fs_read"][1], os.path.join(svc.export_folder({}), "*"))
 
     def test_alpha_signature_means_unaudited_threads(self):
@@ -151,6 +153,52 @@ class NetworkGateTest(ServiceCase):
         with open(os.path.join(self.storage, "state.json")) as f:
             targets = json.load(f)["permission_targets"]
         self.assertEqual(targets, {"base_url": self.server.url, "export_folder": "/data/exports"})
+
+
+class OpenBambuddyTest(ServiceCase):
+    def test_beta_opens_the_dashboard_on_the_calling_thread(self):
+        self.service.network_grant = "http://127.0.0.1"
+        self.service.configure({"base_url": self.server.url + "/api/v1"})
+        self.service.open_bambuddy()
+        self.assertEqual(self.host.urls, [self.server.url + "/"])
+
+    def test_alpha_opens_it_on_the_worker(self):
+        self.service.configure({"base_url": self.server.url})
+        with mock.patch.object(self.service, "submit") as submit:
+            self.service.open_bambuddy()
+        submit.assert_called_once_with(self.host.open_url, self.server.url + "/")
+
+    def test_notification_link_opens_the_dashboard(self):
+        self.service.network_grant = "http://127.0.0.1"
+        self.service.configure({"base_url": self.server.url})
+        clicks = []
+        self.host.notify = lambda level, text, link_text="", on_click=None: clicks.append(on_click)
+        self.service.send(svc.SendJob(path=os.path.join(os.path.dirname(__file__), "fixtures", "cube_x1c.gcode.3mf"), action="store"), lambda *a: None)
+        clicks[-1]()
+        self.assertEqual(self.host.urls, [self.server.url + "/"])
+
+
+class LauncherTest(unittest.TestCase):
+    def test_one_process_with_a_fixed_command(self):
+        self.addCleanup(sys.modules.pop, "orca_bambuddy.orca_adapter", None)
+        with mock.patch.dict(sys.modules, {"orca": fake_orca("", lambda **kw: None)}):
+            sys.modules.pop("orca_bambuddy.orca_adapter", None)
+            adapter = importlib.import_module("orca_bambuddy.orca_adapter")
+            with mock.patch.object(adapter.subprocess, "Popen") as popen, mock.patch.object(adapter.sys, "platform", "linux"), \
+                    mock.patch.object(adapter.webbrowser, "open") as browser:
+                adapter.Host().open_url("http://bambuddy.lan:8000/")
+        popen.assert_called_once_with(["xdg-open", "http://bambuddy.lan:8000/"], start_new_session=True)
+        browser.assert_not_called()
+
+    def test_load_request_names_the_launch_exactly(self):
+        # OrcaSlicer matches a process grant against str(args) of subprocess.Popen, verbatim.
+        hook_cmd = ["xdg-open", "https://bb.example/"]
+        with mock.patch.dict(sys.modules, {"orca": fake_orca("", lambda **kw: None)}):
+            sys.modules.pop("orca_bambuddy.orca_adapter", None)
+            adapter = importlib.import_module("orca_bambuddy.orca_adapter")
+            with mock.patch.object(adapter.sys, "platform", "linux"):
+                command, target = adapter.launch_command(svc.dashboard_url("https://bb.example/api/v1"))
+        self.assertEqual((command, target), (hook_cmd, str(hook_cmd)))
 
 
 class DenialMessageTest(unittest.TestCase):

@@ -17,6 +17,7 @@ import encodings.idna  # noqa: F401
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -78,7 +79,20 @@ class Host:
             log.warning("Notification not shown: %s", text)
 
     def open_url(self, url: str) -> None:
-        webbrowser.open(url)  # a process spawn; see Service.open_url
+        # One process with one fixed command line (see launch_command). No DEVNULL redirects:
+        # opening os.devnull is a file access OrcaSlicer would ask about too.
+        command, _ = launch_command(url)
+        try:
+            if command is None:
+                os.startfile(url)  # noqa: S606
+            else:
+                subprocess.Popen(command, start_new_session=True)  # noqa: S603
+        except FileNotFoundError:
+            webbrowser.open(url)  # no xdg-open: let Python look for a browser
+        except OSError as e:
+            log.warning("Could not open %s: %s", url, e)
+            self.notify("warning", f"Bambuddy: could not open the browser ({e}). Open {url} yourself.")
+
 
 class Runtime:
     """Shared state of the plugin's capabilities: one service, one config holder."""
@@ -139,6 +153,21 @@ class Runtime:
 RUNTIME = Runtime()
 
 
+def launch_command(url: str) -> tuple[list[str] | None, str]:
+    """How Host.open_url starts the browser: (command, or None for os.startfile; the target
+    OrcaSlicer's audit hook reports for it).
+
+    One system opener instead of webbrowser, which runs xdg-settings and then tries browser
+    after browser: on 2.5.0-beta every attempt is a permission prompt for that exact command
+    line. The target is what declare_permissions asks for, so it must match verbatim:
+    str(args) for subprocess.Popen, the path for os.startfile.
+    """
+    if sys.platform == "win32":
+        return None, url
+    command = ["open", url] if sys.platform == "darwin" else ["xdg-open", url]
+    return command, str(command)
+
+
 def load_permission_targets(module_file: str = __file__) -> dict:
     """The Bambuddy URL and export folder, before the capabilities exist.
 
@@ -189,15 +218,18 @@ def declare_permissions() -> str | None:
         log.warning("Settings not readable at load; asking only for the default folders", exc_info=True)
     folders = [svc.orca_model_temp_dir(), targets.get("export_folder") or svc.export_folder({})]
     origin = svc.network_origin(targets.get("base_url", ""))
+    # The links to Bambuddy all start this one command (Service.open_bambuddy).
+    process = [launch_command(svc.dashboard_url(targets["base_url"]))[1]] if origin else []
     try:
         orca.request_permissions(
             fs_read=[os.path.join(f, "*") for f in folders],
             threading=True,
             network=[origin] if origin else [],
+            process=process,
         )
     except TypeError:
         return None
-    log.info("Permissions requested: %s, network %s", folders, origin or "none")
+    log.info("Permissions requested: %s, network %s, process %s", folders, origin or "none", process)
     return origin
 
 
@@ -425,8 +457,8 @@ class BambuddyPage(orca.pages.PagesPluginCapabilityBase):
             s.focus(data.get("printer_id"))
         elif kind == "snapshot" and data.get("printer_id") is not None:
             s.submit(s.snapshot, int(data["printer_id"]))
-        elif kind == "open_url":
-            s.open_url(data.get("url"))
+        elif kind == "open_bambuddy":
+            s.open_bambuddy()
         elif kind == "list_exports":
             s.submit(s.list_exports)
         elif kind == "describe" and data.get("path"):

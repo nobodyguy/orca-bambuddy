@@ -157,6 +157,11 @@ def network_origin(url: str) -> str:
     return f"{parts.scheme.lower()}://{parts.hostname.lower()}"
 
 
+def dashboard_url(base_url: str) -> str:
+    """The one Bambuddy page the plugin opens in the browser."""
+    return normalize_base_url(base_url) + "/"
+
+
 def make_connection(cfg: dict) -> Connection:
     cf = bool(cfg.get("cf_access_enabled"))
     headers, problems = parse_extra_headers(cfg.get("extra_headers", ""))
@@ -535,15 +540,21 @@ class Service:
     def focus(self, printer_id: int | None) -> None:
         self._focus_printer = printer_id
 
-    def open_url(self, url: str) -> None:
-        # Only links into the configured Bambuddy are opened. Called on the UI thread; the
-        # browser is a process spawn, which an audited thread may not start without asking.
+    def open_bambuddy(self) -> None:
+        """Open the Bambuddy dashboard in the browser. Call it on the UI thread.
+
+        Always the same URL: on 2.5.0-beta OrcaSlicer asks once per distinct command line,
+        so one link means one prompt, remembered after Yes. On an audited plugin thread the
+        first launch would be refused instead of asked.
+        """
         client = self.client
-        if client and isinstance(url, str) and url.startswith(client.base_url + "/"):
-            if self.network_grant is None:
-                self.submit(self.host.open_url, url)
-            else:
-                self.host.open_url(url)
+        if client is None:
+            return
+        url = dashboard_url(client.base_url)
+        if self.network_grant is None:
+            self.submit(self.host.open_url, url)
+        else:
+            self.host.open_url(url)
 
     # ---- manual send from the page (works without printer agents) -------------
 
@@ -655,8 +666,7 @@ class Service:
             log.exception("Send failed")
             result = {"ok": False, "message": f"Unexpected error: {e}", "kind": "bug"}
         if result["ok"]:
-            url = result["url"]
-            self.host.notify("success", result["message"], "Open in Bambuddy", lambda: self.host.open_url(url))
+            self.host.notify("success", result["message"], "Open in Bambuddy", self.open_bambuddy)
         else:
             self.host.notify("error", "Bambuddy: " + result["message"])
         return result
@@ -778,9 +788,8 @@ class Service:
         if name in job.milestones:
             return
         job.milestones.add(name)
-        client = self.client
-        url = client.web_url("/queue") if client else ""
-        self.host.notify(level, text, "Open in Bambuddy" if url else "", (lambda: self.host.open_url(url)) if url else None)
+        linked = self.client is not None
+        self.host.notify(level, text, "Open in Bambuddy" if linked else "", self.open_bambuddy if linked else None)
         self.host.post_page({"type": "job", "job": self._job_view(job)})
 
     def poll_tracked(self) -> None:

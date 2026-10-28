@@ -79,10 +79,13 @@ printer per send.
      thread.*
    - **2.5.0-beta** asks once, while the plugin loads, for: creating threads; reading OrcaSlicer's
      temp folder (`<temp>/orcaslicer_<uid>/orcaslicer_model`, where OrcaSlicer puts the sliced file
-     for Print/Send) and your export folder (default `~/Downloads`); and network access to your
-     Bambuddy host. Answering No stops the plugin from loading. The host is known only after you
+     for Print/Send) and your export folder (default `~/Downloads`); network access to your
+     Bambuddy host; and running `xdg-open <your Bambuddy URL>` (`open` on macOS), which the
+     **Open Bambuddy** links use. Answering No stops the plugin from loading. The host is known only after you
      enter the URL, so **after setting or changing the Bambuddy URL, restart OrcaSlicer** and answer
      Yes again. Until then the plugin says so instead of connecting.
+   - **Open Bambuddy** and *Open in Bambuddy* (in notifications) always open the Bambuddy
+     dashboard.
 
 A **Bambuddy** tab now appears next to Prepare, Preview, Device and Project.
 

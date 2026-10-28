@@ -135,8 +135,19 @@ What the plugin does (`orca_adapter.declare_permissions`):
 - On the beta `Service.network_grant` is the granted origin. A URL on another host gets no client:
   every request would only produce a useless per-URL prompt and a denial. The plugin shows "restart
   OrcaSlicer and answer Yes" instead.
-- On the beta, Bambuddy-tab links open the browser on the UI thread, where a process spawn is asked
-  for and not denied.
+- Links to Bambuddy (the tab's button and the notifications) start one process: `xdg-open <url>`,
+  `open <url>` or `os.startfile(url)`. They always open the dashboard (`<base URL>/`). The beta
+  asks once per exact command line. `webbrowser.open` first ran `xdg-settings get
+  default-web-browser` and then tried `xdg-open`, `gio`, `x-www-browser`, `firefox`,
+  `google-chrome`, … one by one. That gave about five prompts per click, with the URL in each, so
+  every page asked again. `declare_permissions` adds that one command line to the load-time
+  request (`process`, matched verbatim against `str(args)`; see `launch_command`), so clicking
+  a link never prompts. Without a saved URL at load there is one prompt on the first click,
+  remembered after Yes. No `DEVNULL`
+  redirects, because opening `os.devnull` is a file access the beta would ask about too. On the
+  beta the launch runs on the UI thread, which asks; on a plugin thread it would be refused. On the
+  alpha it runs on the worker, as before. The host API (beta and `main`) has no URL opener. A link
+  in a plugin page loads inside the page (`PluginPage::on_new_window`).
 - Denials still reaching the code are reported as such: `NotASlicedFile` "may not read",
   `BambuddyError` kind `blocked`.
 - Lazy stdlib imports must not happen first on a plugin thread. The beta sets `pycache_prefix` to
@@ -273,7 +284,7 @@ On the wire it is checked by the unit tests only; there was no real proxy to tes
 
 ## Verification log
 
-Automated (`python3 -m unittest discover -s tests`): 113 tests, 5 of them live tests that skip
+Automated (`python3 -m unittest discover -s tests`): 118 tests, 5 of them live tests that skip
 without `BAMBUDDY_TEST_URL`. They cover:
 - the REST client against a scripted HTTP server: headers, every error class including Cloudflare
   redirect, 403 and 413, timeouts, refused connections, multipart streaming, cancel, camera token
@@ -335,5 +346,6 @@ Not verified:
 - The Send menu entry (`SendToPrinterDialog`): the popup menu could not be opened through XTest;
   it shares `agent_job` with the Print path.
 - Print all plates from OrcaSlicer's dialog.
-- "Open in Bambuddy" links: they start the desktop browser, which is not available in the headless
-  test.
+- "Open in Bambuddy" links in a real browser. In the headless test a stand-in `xdg-open` on `PATH`
+  logged the launches. Beta: `['xdg-open', 'http://localhost:18001/']` is part of the startup
+  prompt; the first click and a notification link open it with no prompt. Alpha: no prompt.

@@ -217,7 +217,7 @@ $("printers").addEventListener("click", ev => {
 $("btn-snap").onclick = () => focus != null && post({type: "snapshot", printer_id: focus});
 $("snap").onclick = () => $("snap").classList.toggle("large");
 $("btn-test").onclick = () => { $("test").style.display = ""; $("test").textContent = "Testing..."; post({type: "test"}); };
-$("btn-open").onclick = () => serverUrl && post({type: "open_url", url: serverUrl + "/"});
+$("btn-open").onclick = () => serverUrl && post({type: "open_bambuddy"});
 $("btn-save").onclick = () => {
   const s = readSettings();
   for (const k of SECRET) s["clear_" + k] = $("clear_" + k).checked;
