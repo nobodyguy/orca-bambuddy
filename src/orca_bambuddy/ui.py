@@ -256,8 +256,8 @@ orca.onMessage(m => {
     $("test").style.display = "";
     $("test").innerHTML = m.lines.map(([lvl, text]) => `<div class="${lvl}">${lvl === "ok" ? "&#10003;" : lvl === "warn" ? "!" : "&#10007;"} ${esc(text)}</div>`).join("");
   } else if (m.type === "saved") {
-    $("saved").textContent = m.ok ? "Saved." : (m.error || "Not saved.");
-    $("saved").className = m.ok ? "ok" : "error";
+    $("saved").textContent = m.ok ? (m.notice ? "Saved. " + m.notice : "Saved.") : (m.error || "Not saved.");
+    $("saved").className = m.ok && !m.notice ? "ok" : m.ok ? "warn" : "error";
     if (m.ok) {  // on failure keep what the user typed, so it can be corrected
       for (const k of SECRET) $("clear_" + k).checked = false;
       fillSettings(m.settings); serverUrl = (m.settings.base_url || "").replace(/\\/+$/, ""); $("server").textContent = " - " + serverUrl;

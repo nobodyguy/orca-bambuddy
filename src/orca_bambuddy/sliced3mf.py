@@ -87,6 +87,12 @@ def inspect(path: str) -> SlicedFile:
         zf = zipfile.ZipFile(path)
     except FileNotFoundError:
         raise NotASlicedFile(f"File not found: {path}") from None
+    except PermissionError as e:
+        # OrcaSlicer's audit hook (2.5.0-beta and later) also lands here; see NOTES.md.
+        raise NotASlicedFile(
+            f"The plugin may not read {path} ({e}). Answer Yes if OrcaSlicer asks for read access, "
+            "then try again; if it does not ask, restart OrcaSlicer."
+        ) from None
     except (OSError, zipfile.BadZipFile) as e:
         raise NotASlicedFile(f"Not a 3MF file: {os.path.basename(path)} ({e})") from None
     with zf:

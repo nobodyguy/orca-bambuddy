@@ -29,6 +29,7 @@ from .bambuddy import (
     BambuddyClient,
     BambuddyError,
     Connection,
+    normalize_base_url,
     parse_extra_headers,
 )
 
@@ -65,6 +66,10 @@ DEVICE_PUSH_INTERVAL_S = 3
 NO_THREADS = (
     "The plugin is not allowed to start its background threads. Restart OrcaSlicer, open the "
     "Bambuddy tab and answer Yes to the permission prompt."
+)
+RESTART_FOR_NETWORK = (
+    "OrcaSlicer has not allowed the plugin to connect to {host} yet. Restart OrcaSlicer and "
+    "answer Yes when it asks for network access to {host}."
 )
 
 
@@ -121,6 +126,35 @@ def apply_settings_update(cfg: dict, update: dict) -> dict:
 def export_folder(cfg: dict) -> str:
     folder = cfg.get("export_folder") or os.path.join(os.path.expanduser("~"), "Downloads")
     return os.path.expanduser(folder)
+
+
+def orca_temp_root() -> str:
+    """OrcaSlicer's temp folder: per_user_temp_dir(wxFileName::GetTempDir(), getuid()).
+
+    Not tempfile.gettempdir(): that probes each candidate by creating a file, which
+    OrcaSlicer's audit hook refuses while the plugin loads.
+    """
+    if os.name == "nt":
+        names, fallback = ("TMP", "TEMP", "USERPROFILE"), os.environ.get("WINDIR", "C:\\Windows")
+    else:
+        names, fallback = ("TMPDIR", "TMP", "TEMP"), "/tmp"
+    base = next((os.environ[n] for n in names if os.environ.get(n)), fallback)
+    base = base.rstrip("/\\") or base
+    return base if os.name == "nt" else os.path.join(base, f"orcaslicer_{os.getuid()}")
+
+
+def orca_model_temp_dir() -> str:
+    """Where OrcaSlicer writes the sliced .3mf it hands to the printer agent (Model::get_backup_path)."""
+    return os.path.join(orca_temp_root(), "orcaslicer_model")
+
+
+def network_origin(url: str) -> str:
+    """scheme://host of a Bambuddy URL: the form of OrcaSlicer's host-wide network grant
+    (PluginAuditManager::normalize_network_url). Empty when there is no usable URL."""
+    parts = urllib.parse.urlsplit(normalize_base_url(url))
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        return ""
+    return f"{parts.scheme.lower()}://{parts.hostname.lower()}"
 
 
 def make_connection(cfg: dict) -> Connection:
@@ -294,6 +328,10 @@ class Service:
         self.state = StateStore(storage_dir)
         self.cfg = merge_settings({})
         self.client: BambuddyClient | None = None
+        self.client_problem = ""  # why there is no client although a URL is set
+        # OrcaSlicer 2.5.0-beta audits the plugin's own threads, so they reach only the host
+        # granted when the plugin loaded (None: unaudited threads, as in 2.5.0-alpha).
+        self.network_grant: str | None = None
         self.server_version = ""
         self._tasks: queue.Queue = queue.Queue()
         self._jobs: queue.Queue = queue.Queue()
@@ -350,9 +388,29 @@ class Service:
 
     def configure(self, cfg: dict) -> None:
         self.cfg = merge_settings(cfg)
-        self.client = BambuddyClient(make_connection(self.cfg)) if self.cfg["base_url"] else None
+        self.client, self.client_problem = None, ""
+        if self.cfg["base_url"]:
+            client = BambuddyClient(make_connection(self.cfg))
+            origin = network_origin(client.base_url)
+            if self.network_grant is not None and origin != self.network_grant:
+                host = urllib.parse.urlsplit(client.base_url).netloc or client.base_url
+                self.client_problem = RESTART_FOR_NETWORK.format(host=host)
+            else:
+                self.client = client
         self._next_printer_list = 0.0
         self.agent.next_announce = 0.0
+        self._save_permission_targets()
+
+    def _save_permission_targets(self) -> None:
+        """Keep what the plugin asks OrcaSlicer for at load time in state.json: the
+        capability settings cannot be read while the plugin loads."""
+        targets = {"base_url": normalize_base_url(self.cfg["base_url"]), "export_folder": export_folder(self.cfg)}
+        if self.state.data.get("permission_targets") != targets:
+            self.state.data["permission_targets"] = targets
+            self.state.save()
+
+    def _no_client(self, unconfigured: str) -> str:
+        return self.client_problem or unconfigured
 
     def submit(self, fn, *args) -> None:
         self._tasks.put((fn, args))
@@ -426,7 +484,7 @@ class Service:
 
     def run_test(self) -> None:
         if not self.client:
-            self.host.post_page({"type": "test", "ok": False, "lines": [("error", "Enter the Bambuddy URL first.")]})
+            self.host.post_page({"type": "test", "ok": False, "lines": [("error", self._no_client("Enter the Bambuddy URL first."))]})
             return
         self.host.post_page({"type": "test", **test_connection(self.client)})
 
@@ -443,7 +501,7 @@ class Service:
             try:
                 statuses[p["id"]] = client.printer_status(p["id"])
             except BambuddyError as e:
-                if e.kind in ("unreachable", "timeout", "cloudflare", "auth", "tls"):
+                if e.kind in ("unreachable", "timeout", "cloudflare", "auth", "tls", "blocked"):
                     raise
                 statuses[p["id"]] = {}
         self._statuses = statuses
@@ -452,7 +510,7 @@ class Service:
     def refresh_status(self, force_list: bool = False) -> None:
         client = self.client
         if client is None:
-            self.host.post_page({"type": "printers", "printers": [], "error": "Bambuddy URL not set."})
+            self.host.post_page({"type": "printers", "printers": [], "error": self._no_client("Bambuddy URL not set.")})
             return
         try:
             printers = self._fetch_printers(client, force_list)
@@ -478,10 +536,14 @@ class Service:
         self._focus_printer = printer_id
 
     def open_url(self, url: str) -> None:
-        # Only links into the configured Bambuddy are opened.
+        # Only links into the configured Bambuddy are opened. Called on the UI thread; the
+        # browser is a process spawn, which an audited thread may not start without asking.
         client = self.client
         if client and isinstance(url, str) and url.startswith(client.base_url + "/"):
-            self.submit(self.host.open_url, url)
+            if self.network_grant is None:
+                self.submit(self.host.open_url, url)
+            else:
+                self.host.open_url(url)
 
     # ---- manual send from the page (works without printer agents) -------------
 
@@ -503,7 +565,7 @@ class Service:
         )
         client = self.client
         if client is None:
-            self.host.post_page({"type": "targets", "targets": [], "error": "Set the Bambuddy URL and API key first."})
+            self.host.post_page({"type": "targets", "targets": [], "error": self._no_client("Set the Bambuddy URL and API key first.")})
             return
         try:
             printers = self._fetch_printers(client, force=True)
@@ -602,7 +664,7 @@ class Service:
     def _send(self, job: SendJob, progress, cancelled) -> dict:
         client = self.client
         if client is None:
-            raise BambuddyError("bad_url", "Set the Bambuddy URL and API key in the Bambuddy tab first.")
+            raise BambuddyError("bad_url", self._no_client("Set the Bambuddy URL and API key in the Bambuddy tab first."))
         info = sliced3mf.inspect(job.path)
         name = job.name or info.filename
         problem = sliced3mf.filename_problem(name)
@@ -799,7 +861,9 @@ class Service:
         """connect_printer(): report the version, a first status, then 'connected'."""
         client = self.client
         if client is None or self.printer_for_dev(dev) is None:
-            self.agent.emit("local_connect", 1, dev, "Bambuddy is not configured or the printer is gone")
+            self.agent.emit("local_connect", 1, dev, self._no_client("Bambuddy is not configured or the printer is gone"))
+            if self.client_problem:
+                self.host.notify("error", "Bambuddy: " + self.client_problem)
             return
         try:
             self.server_version = self.server_version or client.version()

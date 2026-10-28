@@ -66,7 +66,7 @@ class BambuddyError(Exception):
 
     ``kind`` lets callers react to a class of failure: unreachable, timeout, tls,
     bad_url, auth, permission, cloudflare, proxy, too_large, not_found, bad_request,
-    server, cancelled.
+    server, cancelled, blocked (OrcaSlicer refused the connection).
     """
 
     def __init__(self, kind: str, message: str, status: int | None = None):
@@ -298,6 +298,13 @@ class BambuddyClient:
             return BambuddyError("unreachable", f"Host name {host.split(':')[0]} could not be resolved. Check the URL.")
         if isinstance(reason, ConnectionRefusedError):
             return BambuddyError("unreachable", f"Connection to {host} refused. Is Bambuddy running on that port?")
+        if isinstance(reason, PermissionError) and "audited operation" in str(reason):
+            # OrcaSlicer's plugin audit hook, not the network (see NOTES.md).
+            return BambuddyError(
+                "blocked",
+                f"OrcaSlicer did not allow the plugin to connect to {host}. Restart OrcaSlicer and "
+                "answer Yes when it asks for network access to it.",
+            )
         if isinstance(reason, OSError):
             return BambuddyError("unreachable", f"Cannot reach {host}: {reason.strerror or reason}.")
         return BambuddyError("unreachable", f"Cannot reach {host}: {reason}.")

@@ -59,7 +59,7 @@ printer per send.
 
 ## Requirements
 
-- OrcaSlicer **2.5.0-alpha** or later (Windows, macOS, Linux).
+- OrcaSlicer **2.5.0-alpha** or **2.5.0-beta** (Windows, macOS, Linux).
 - Bambuddy **1.2.5.7** (tested; 1.3.0b1 was tested too).
 - A Bambuddy API key. Nothing else to install: the plugin uses only Python's standard library.
 
@@ -72,10 +72,17 @@ printer per send.
 2. In OrcaSlicer open **☰ menu > Plugins**, open the arrow next to **Install plugin**, choose
    **Install local plugin** and pick the `.whl` file.
 3. Tick **Activate** next to *orca-bambuddy*, then restart OrcaSlicer.
-4. The first time the plugin starts, OrcaSlicer asks: *Plugin "orca-bambuddy" is requesting
-   permission to create a thread.* Answer **Yes**. The plugin does all network and file work in
-   background threads so the slicer never freezes. OrcaSlicer remembers the answer until you install
-   a new version.
+4. The first time the plugin starts, OrcaSlicer asks for permissions. Answer **Yes**: the plugin
+   does all network and file work in background threads so the slicer never freezes. OrcaSlicer
+   remembers the answers until you install a new version.
+   - **2.5.0-alpha** asks once: *Plugin "orca-bambuddy" is requesting permission to create a
+     thread.*
+   - **2.5.0-beta** asks once, while the plugin loads, for: creating threads; reading OrcaSlicer's
+     temp folder (`<temp>/orcaslicer_<uid>/orcaslicer_model`, where OrcaSlicer puts the sliced file
+     for Print/Send) and your export folder (default `~/Downloads`); and network access to your
+     Bambuddy host. Answering No stops the plugin from loading. The host is known only after you
+     enter the URL, so **after setting or changing the Bambuddy URL, restart OrcaSlicer** and answer
+     Yes again. Until then the plugin says so instead of connecting.
 
 A **Bambuddy** tab now appears next to Prepare, Preview, Device and Project.
 
@@ -249,6 +256,8 @@ If you prefer not to enable the experimental printer agents:
 | *printer* is offline | the job waits in Bambuddy's queue until the printer is back |
 | This plate was sliced for X1C, but *printer* is a A1 Mini | select the matching printer preset and slice again |
 | The plugin is not allowed to start its background threads | you answered No to the thread prompt: reinstall the plugin, or restart and answer Yes |
+| OrcaSlicer has not allowed the plugin to connect to *host* yet / did not allow the plugin to connect | OrcaSlicer 2.5.0-beta: restart OrcaSlicer after setting the URL, and answer Yes to the network prompt |
+| The plugin may not read *file* … audit permission required | OrcaSlicer 2.5.0-beta refused a file read. For Print/Send, update the plugin and restart. For a file picked in the Bambuddy tab outside the export folder, answer Yes to OrcaSlicer's prompt and send again |
 
 The plugin logs to OrcaSlicer's Python log, `<data dir>/log/python_*.log`, with lines starting
 with `[bambuddy]`. Secrets are never logged or shown in notifications.
@@ -263,7 +272,8 @@ OrcaSlicer's data directory (`<data dir>`) is `%APPDATA%\OrcaSlicer` on Windows,
 | Settings, **including the API key, Cloudflare secret and extra headers, in plain text** | `<data dir>/orca_plugins/config.json` (OrcaSlicer's plugin configuration store) |
 | Printer remembered per preset, hashes of uploaded files | `<data dir>/orca_plugins/plugin_data/<plugin key>/state.json` |
 | The access code you typed per printer | OrcaSlicer's own `OrcaSlicer.conf` |
-| Thread permission | `<data dir>/orca_plugins/<plugin folder>/.install_state.json` |
+| Permissions granted to the plugin | `<data dir>/orca_plugins/<plugin folder>/.install_state.json` |
+| A copy of the Bambuddy URL and export folder, for the permission request at load (fallback) | `<data dir>/orca_plugins/plugin_data/<plugin key>/state.json` |
 
 OrcaSlicer 2.5 offers plugins no encrypted secret store. Anyone who can read your OrcaSlicer data
 directory can read the API key, so give the key only the three permissions above. The settings

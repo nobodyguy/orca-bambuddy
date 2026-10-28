@@ -1,12 +1,19 @@
 """Everything that touches OrcaSlicer's plugin API (the embedded ``orca`` module).
 
 Verified against OrcaSlicer v2.5.0-alpha (git 3880f2c, 2026-10-16): src/slic3r/plugin/*,
-the printerAgent and pages capability bindings, and plugin/host/PluginHostUi.cpp. The
-plugin API is alpha; keep calls to it in this file.
+the printerAgent and pages capability bindings, and plugin/host/PluginHostUi.cpp; the
+permission model also against v2.5.0-beta. The plugin API is alpha; keep calls to it in
+this file.
 """
 
 from __future__ import annotations
 
+# Codecs the stdlib imports on first use: socket.getaddrinfo needs idna (and stringprep),
+# zipfile needs cp437. Import them while the plugin loads. On the plugin's threads,
+# OrcaSlicer 2.5.0-beta refuses the bytecode-cache write of a first import and queues a
+# permission prompt for a target-less "open" (see NOTES.md).
+import encodings.cp437  # noqa: F401
+import encodings.idna  # noqa: F401
 import json
 import logging
 import os
@@ -71,9 +78,7 @@ class Host:
             log.warning("Notification not shown: %s", text)
 
     def open_url(self, url: str) -> None:
-        # Runs on the worker thread: starting the browser is a process spawn.
-        webbrowser.open(url)
-
+        webbrowser.open(url)  # a process spawn; see Service.open_url
 
 class Runtime:
     """Shared state of the plugin's capabilities: one service, one config holder."""
@@ -83,6 +88,7 @@ class Runtime:
         self.service: svc.Service | None = None
         self.agent = None  # the capability that stores the settings
         self.users = 0
+        self.network_grant: str | None = None  # see declare_permissions()
 
     @property
     def stopped(self) -> bool:
@@ -96,6 +102,7 @@ class Runtime:
             except Exception:  # noqa: BLE001
                 log.warning("No plugin storage folder; remembered printers will not persist")
             self.service = svc.Service(self.host, storage)
+            self.service.network_grant = self.network_grant
         self.users += 1
         return self.service
 
@@ -130,6 +137,68 @@ class Runtime:
 
 
 RUNTIME = Runtime()
+
+
+def load_permission_targets(module_file: str = __file__) -> dict:
+    """The Bambuddy URL and export folder, before the capabilities exist.
+
+    orca.host.plugin.storage() is not available while the plugin loads (2.5.0-beta), so the
+    folders are found from this file's path: a local wheel is extracted to
+    <data dir>/orca_plugins/<key>.whl/__whl_extracted__/..., and its plugin key is the wheel's
+    stem. Read first from OrcaSlicer's plugin config store (orca_plugins/config.json), else
+    from the copy the service keeps in plugin_data/<key>/state.json.
+    """
+    parts = os.path.normpath(os.path.abspath(module_file)).split(os.sep)
+    if "__whl_extracted__" not in parts:
+        return {}
+    i = parts.index("__whl_extracted__")
+    key = parts[i - 1][: -len(".whl")] if parts[i - 1].endswith(".whl") else parts[i - 1]
+    plugins_dir = os.sep.join(parts[: i - 1])
+    while plugins_dir and not os.path.isfile(os.path.join(plugins_dir, "config.json")):
+        parent = os.path.dirname(plugins_dir)
+        if parent == plugins_dir:
+            return {}
+        plugins_dir = parent
+    try:
+        with open(os.path.join(plugins_dir, "config.json"), encoding="utf-8") as f:
+            entries = json.load(f).get("config") or []
+        for entry in entries:
+            if entry.get("plugin_key") == key and entry.get("capability") == AGENT_CAPABILITY:
+                cfg = svc.merge_settings(entry.get("cap_config"))
+                return {"base_url": cfg["base_url"], "export_folder": svc.export_folder(cfg)}
+    except (OSError, ValueError, AttributeError) as e:
+        log.info("Plugin config store not readable at load (%s); using state.json", e)
+    return svc.StateStore(os.path.join(plugins_dir, "plugin_data", key)).data.get("permission_targets") or {}
+
+
+def declare_permissions() -> str | None:
+    """Ask OrcaSlicer for what the plugin's threads need, while the plugin loads.
+
+    OrcaSlicer 2.5.0-beta audits threads a plugin starts, and refuses a first access made
+    off the UI thread. Grants made at runtime are exact paths and URLs, which never match
+    the next job's temp file or the next status URL. Only a load-time request gives folder
+    trees ("<dir>/*") and a whole host (scheme://host). See NOTES.md.
+
+    Returns the host granted ("" for none), or None on 2.5.0-alpha, whose request_permissions()
+    takes only fs_read and whose plugin threads are not audited.
+    """
+    targets = {}
+    try:
+        targets = load_permission_targets()
+    except Exception:  # noqa: BLE001
+        log.warning("Settings not readable at load; asking only for the default folders", exc_info=True)
+    folders = [svc.orca_model_temp_dir(), targets.get("export_folder") or svc.export_folder({})]
+    origin = svc.network_origin(targets.get("base_url", ""))
+    try:
+        orca.request_permissions(
+            fs_read=[os.path.join(f, "*") for f in folders],
+            threading=True,
+            network=[origin] if origin else [],
+        )
+    except TypeError:
+        return None
+    log.info("Permissions requested: %s, network %s", folders, origin or "none")
+    return origin
 
 
 def slicer_context() -> dict:
@@ -343,7 +412,9 @@ class BambuddyPage(orca.pages.PagesPluginCapabilityBase):
             s.page_heartbeat(bool(data.get("visible")))
         elif kind == "save_settings":
             ok, error = RUNTIME.save_settings(data.get("settings") or {})
-            self.post_message({"type": "saved", "ok": ok, "error": error, "settings": svc.public_settings(s.cfg)})
+            self.post_message(
+                {"type": "saved", "ok": ok, "error": error, "notice": s.client_problem, "settings": svc.public_settings(s.cfg)}
+            )
             if ok:
                 s.submit(s.refresh_status, True)
         elif kind == "test":
@@ -369,8 +440,6 @@ class BambuddyPage(orca.pages.PagesPluginCapabilityBase):
 @orca.plugin
 class BambuddyPlugin(orca.base):
     def register_capabilities(self):
-        # OrcaSlicer 2.5.0-alpha's request_permissions() only takes fs_read, and this plugin
-        # reads nothing outside allowed folders on audited threads. The one prompt the user
-        # sees is for creating the plugin's two threads (see Service.ensure_started).
+        RUNTIME.network_grant = declare_permissions()
         orca.register_capability(BambuddyAgent)
         orca.register_capability(BambuddyPage)

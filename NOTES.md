@@ -5,6 +5,7 @@
 | Component | Version | Source |
 |---|---|---|
 | OrcaSlicer | 2.5.0-alpha, git `3880f2c` (2026-10-16, "Bump version to 2.5.0-alpha") | source in `/home/devel/repos/OrcaSlicer` and the release AppImage `OrcaSlicer_Linux_AppImage_Ubuntu2404_V2.5.0-alpha` (embedded CPython 3.12.13, OpenSSL 1.1.1w) |
+| OrcaSlicer | 2.5.0-beta, tag `v2.5.0-beta` (2026-10-27, build `345efec6`) | the plugin audit sources at the tag (`PluginAuditManager.cpp`, `PythonPluginBridge.cpp`); see "Audit changes in 2.5.0-beta" |
 | Bambuddy (primary) | 1.2.5.7, tag `v1.2.5.7` = `188df76` | source at the tag; Docker image `ghcr.io/maziggy/bambuddy:1.2.5.7` |
 | Bambuddy (extra) | 1.3.0b1 | a `demo.bambuddy.cool` session with simulated printers |
 
@@ -80,8 +81,9 @@ Printer agent methods implemented: `get_agent_info`, all nine `set_*_fn` callbac
   (`urllib.Request` target = URL incl. path and query), and file events by path. Off the UI
   thread a first-time prompt is posted asynchronously and the event is **denied**
   (`PluginAuditManager.cpp::request_permission`).
-- Threads the plugin starts are not attributed to it (thread-local audit context), and thread
-  creation is a single persisted grant (`threading: ["thread"]`).
+- In 2.5.0-alpha, threads the plugin starts are not attributed to it (thread-local audit context;
+  2.5.0-beta changed this, see below), and thread creation is a single persisted grant
+  (`threading: ["thread"]`).
 - Therefore the plugin does all network and file I/O on two long-lived threads (worker and send
   runner). They are started on the first **UI-thread** entry (`start_discovery`, `connect_printer`
   or a page message), so the one thread prompt appears inline. A re-entrancy guard is needed
@@ -89,6 +91,63 @@ Printer agent methods implemented: `get_agent_info`, all nine `set_*_fn` callbac
   Previously this showed two prompts; now one.
 - Host UI calls are safe from those threads: `post_message` uses `CallAfter`, and
   `push_notification` and `create_window` marshal to the UI thread and release the GIL.
+
+### Audit changes in 2.5.0-beta (GitHub issue #1)
+
+0.2.0 failed on 2.5.0-beta with *Not a 3MF file: .2.0.3mf (Plugin attempted audited operation
+"open" without permission: audit permission required)*, and with `[AUDIT BLOCKED] ...
+event=urllib.Request` in the debug log. Causes:
+
+- `59e96b71d0` "shim python create thread to audit threads (#16682)" wraps
+  `_thread.start_new_thread`, so the plugin's worker and send threads now run in the plugin's audit
+  context. Their first access to a path or URL is denied, and the prompt comes afterwards
+  (`request_permission`, off the UI thread).
+- A Yes at runtime saves the exact target. The sliced file of a Print/Send is
+  `<temp>/orcaslicer_<uid>/orcaslicer_model/<date>/<time>#<pid>#<id>/Metadata/.<pid>.<n>.3mf`
+  (`Model::get_backup_path`, `Plater` → `get_tmp_gcode_path()` with the extension `3mf`). It is new
+  for every session and plate. A runtime URL grant is the full URL, including printer ids, queue ids
+  and the camera token. Neither matches the next time.
+- Printer-agent calls get no scoped allowed root (only SlicingPipeline does). The host API has no
+  temp-dir accessor.
+
+What the beta offers (`b728e79f26`, `2410112046`, `6a0223f055`):
+`orca.request_permissions(fs_read, fs_readwrite, network_http, network_socket, process,
+threading: bool, network)`, only during `register_capabilities()`. One prompt follows. A No
+aborts the load. Already granted targets are not asked for again. `"<dir>/*"` grants a folder tree
+(fs only, canonical paths). `network` URLs are reduced to `scheme://host` and cover every port,
+path and raw socket of that host.
+
+What the plugin does (`orca_adapter.declare_permissions`):
+- It asks for `threading=True`, `fs_read` on the temp tree (`service.orca_model_temp_dir()`, which
+  mirrors `per_user_temp_dir(wxFileName::GetTempDir(), getuid())`; not `tempfile.gettempdir()`,
+  because that probes by creating files) and on the export folder, and `network` for the saved
+  Bambuddy URL.
+- Capability settings are not available through the API during load, and neither is
+  `orca.host.plugin.storage()` ("must be called from a plugin callback"; seen in the beta).
+  `load_permission_targets` finds the folders from the module's own path:
+  `<data dir>/orca_plugins/<key>.whl/__whl_extracted__/...`, where the key is the wheel's stem. It
+  reads the agent's entry for that key from `orca_plugins/config.json`. The file sits in
+  `data_dir()`, which is an allowed root, and its name is not on the denied list. The format is
+  internal to OrcaSlicer, so `Service.configure` also keeps a copy in
+  `plugin_data/<key>/state.json` (`permission_targets`) as a fallback.
+- On 2.5.0-alpha the call raises `TypeError` (fs_read only). `declare_permissions` returns None
+  then, and nothing changes.
+- On the beta `Service.network_grant` is the granted origin. A URL on another host gets no client:
+  every request would only produce a useless per-URL prompt and a denial. The plugin shows "restart
+  OrcaSlicer and answer Yes" instead.
+- On the beta, Bambuddy-tab links open the browser on the UI thread, where a process spawn is asked
+  for and not denied.
+- Denials still reaching the code are reported as such: `NotASlicedFile` "may not read",
+  `BambuddyError` kind `blocked`.
+- Lazy stdlib imports must not happen first on a plugin thread. The beta sets `pycache_prefix` to
+  `<data dir>/python/pycache` (`d3699dd9f6`). On the AppImage the cached path contains the random
+  `/tmp/.mount_OrcaSlXXXX` folder, so stdlib modules are compiled again on every launch.
+  `importlib._bootstrap_external._write_atomic` wraps an fd in `FileIO`. That raises an `open`
+  event without a path, so OrcaSlicer can only grant it as "any open" (`FsReadWrite:open`). On a
+  plugin thread it is denied, and importlib ignores the failure. A target-less prompt is still
+  queued on every send. `socket.getaddrinfo` imports `encodings.idna` (and `stringprep`), and
+  `zipfile` imports `encodings.cp437`. `orca_adapter` imports these while the plugin loads, where
+  compiling raises no prompt.
 
 ### Plugin image
 
@@ -203,7 +262,8 @@ On the wire it is checked by the unit tests only; there was no real proxy to tes
 | Gap (OrcaSlicer 2.5.0-alpha) | Workaround |
 |---|---|
 | A plugin cannot trigger or observe the export of a sliced `.gcode.3mf`. `Plater.export_3mf_copy()` writes a project without G-code; `GCodeExportFinished` reports only the raw temp G-code; "Export plate sliced file" fires no event. | Primary path: the printer agent, which receives the packaged file from OrcaSlicer's own Print/Send job. Fallback: the user exports, then sends the file from the Bambuddy tab (recent files in the export folder, or a path). |
-| `orca.request_permissions()` accepts only `fs_read`. The wiki's `network_http`, `network_socket`, `process` and `threading` parameters do not exist in the release; calling them fails the plugin load. | No declaration. The single runtime prompt is for thread creation; network I/O happens on plugin threads. Declaring URLs would not help anyway, because grants are exact strings and urllib reports full URLs. |
+| `orca.request_permissions()` accepts only `fs_read` in 2.5.0-alpha. The wiki's `network_http`, `network_socket`, `process` and `threading` parameters do not exist there; calling them raises `TypeError`. | Called with the beta parameters, `TypeError` caught. On the alpha the single runtime prompt is for thread creation, and plugin threads are not audited. On the beta see "Audit changes in 2.5.0-beta". |
+| 2.5.0-beta: a changed Bambuddy host can be granted only at the next load. | "Restart OrcaSlicer" message instead of requests. |
 | The wiki documents `orca.host.ui.show_dialog`, which the release does not have. | `create_window(style=WINDOW_MODAL, on_submit=...)`. |
 | No secret storage for plugins. | Settings in `config.json` in plain text; documented; minimal-scope API key recommended; secrets never echoed back to pages or logged. |
 | The access code is required by OrcaSlicer for LAN devices; an agent cannot pre-set it. | One prompt per printer; any value. |
@@ -213,7 +273,7 @@ On the wire it is checked by the unit tests only; there was no real proxy to tes
 
 ## Verification log
 
-Automated (`python3 -m unittest discover -s tests`): 99 tests, 5 of them live tests that skip
+Automated (`python3 -m unittest discover -s tests`): 113 tests, 5 of them live tests that skip
 without `BAMBUDDY_TEST_URL`. They cover:
 - the REST client against a scripted HTTP server: headers, every error class including Cloudflare
   redirect, 403 and 413, timeouts, refused connections, multipart streaming, cancel, camera token
@@ -248,6 +308,24 @@ In the real OrcaSlicer 2.5.0-alpha AppImage, run headless (Xvfb) and driven thro
 
 On a real installation (Bambuddy 1.2.5.7 with an A1 mini and a P1S): the Bambuddy tab
 status table and a real camera snapshot.
+
+Issue #1 fix (2026-10-28), against Bambuddy 1.2.5.7 in Docker (auth on, one offline X1C added
+through Bambuddy's models, because 1.2.5.7 requires an MQTT connection to create a printer). The
+AppImages ran on Xvfb with a separate `--datadir`.
+
+| Check | 2.5.0-beta | 2.5.0-alpha |
+|---|---|---|
+| 0.2.0 fails as reported: `[AUDIT BLOCKED] ... urllib.Request` on the worker | ✓ (user's log) | |
+| One load prompt: both folder trees, `http://127.0.0.1`, threads; saved as tree and host grants | ✓ | |
+| Only the thread prompt; plugin loads (`TypeError` fallback) | | ✓ |
+| Discovery, connect, status table, Test connection, camera request, job tracking | ✓ | ✓ (connect) |
+| Print plate → chooser → Print now → queue item | ✓ (×6) | |
+| Print plate → chooser → Add to queue → staged item | | ✓ |
+| No audit denial and no prompt during a send (after the codec pre-import) | ✓ | ✓ |
+| Restart: no prompt | ✓ | |
+| Bambuddy tab: file in `~/Downloads` read on the worker | ✓ | |
+| File outside the granted folders: "may not read" message, path prompt; Yes, then Load works; Store only | ✓ | |
+| URL moved to another host: "restart" notice, no requests; after restart only that host is asked for, and it works | ✓ | |
 
 Not verified:
 - Real printers: "started", "first layer finished" and HMS milestones were checked only with
