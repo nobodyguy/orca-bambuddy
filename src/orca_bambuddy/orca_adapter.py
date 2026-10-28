@@ -28,7 +28,7 @@ from . import bambu_dialect as bd
 from . import service as svc
 from . import ui
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 AGENT_CAPABILITY = "Bambuddy printer agent"
 PAGE_CAPABILITY = "Bambuddy"
 
