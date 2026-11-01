@@ -278,3 +278,44 @@ class DenialMessageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentNotStartedTest(unittest.TestCase):
+    """OrcaSlicer 2.5 can pick the preset's printer agent before the plugin registers it."""
+
+    def setUp(self):
+        self.storage = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.storage)
+        orca = fake_orca(self.storage, lambda **kw: None)
+        events = ("NewProject", "ProjectOpened", "ObjectAdded", "PlateSelected", "PresetSelected", "PrintJobStarted", "SendJobStarted")
+        orca.LifecycleEvent = types.SimpleNamespace(**{e: e for e in events})
+        self.agent_id = "bambuddy"
+        orca.host.preset_bundle = lambda: types.SimpleNamespace(full_config_value=lambda key: self.agent_id)
+        patcher = mock.patch.dict(sys.modules, {"orca": orca})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sys.modules.pop("orca_bambuddy.orca_adapter", None)
+        self.addCleanup(sys.modules.pop, "orca_bambuddy.orca_adapter", None)
+        self.adapter = importlib.import_module("orca_bambuddy.orca_adapter")
+        self.host = FakeHost()
+        self.adapter.RUNTIME.host = self.host
+        self.agent = self.adapter.BambuddyAgent()
+        self.agent.service = svc.Service(self.host, self.storage)
+        self.ctx = types.SimpleNamespace(device_id="", name="")
+
+    def test_warns_once_when_the_agent_was_not_started(self):
+        self.agent.on_lifecycle_event("PresetSelected", self.ctx)  # OrcaSlicer may be switching right now
+        self.assertEqual(self.host.notes, [])
+        self.agent.on_lifecycle_event("NewProject", self.ctx)
+        self.agent.on_lifecycle_event("ObjectAdded", self.ctx)
+        self.assertEqual([lvl for lvl, _ in self.host.notes], ["warning"])
+        self.assertIn("Select another printer preset", self.host.notes[0][1])
+
+    def test_silent_when_started_or_not_selected(self):
+        self.agent.start_discovery(True, False)
+        self.agent.service.stop()
+        self.agent.on_lifecycle_event("NewProject", self.ctx)
+        self.agent_id = "orca"
+        self.agent.service.agent.live = False
+        self.agent.on_lifecycle_event("NewProject", self.ctx)
+        self.assertEqual(self.host.notes, [])

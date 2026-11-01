@@ -195,10 +195,23 @@ This uses OrcaSlicer's experimental printer agents. Set it up once:
 2. Select your Bambu Lab printer preset, open its settings (pencil icon), switch to **Advanced**
    mode, and in **Basic information > Advanced** set **Printer Agent** to **Bambuddy**. Save the
    preset; OrcaSlicer saves it as a user preset. Use one such preset per printer model you own.
+   Leave the preset's **print host** (physical printer / connection) empty: the plugin's own
+   settings say where Bambuddy is. With a print host set, OrcaSlicer connects to that address
+   instead of a Bambuddy printer, and the plugin says so.
 3. Restart OrcaSlicer, or select another preset and then this one again.
 4. In the **Device** tab, open the printer list: your Bambuddy printers are listed. Select one.
    The first time, OrcaSlicer asks for an **access code**. The plugin does not use it, so type
    anything, for example `bambuddy`. OrcaSlicer remembers it for that printer.
+
+**Why your printers are listed again.** OrcaSlicer keeps a separate printer list, with its own
+access codes, for each printer agent. While a Bambuddy preset is selected, the Device tab shows
+the printers Bambuddy reports, as new entries (each needs the access code once). Your printers
+from Bambu Lab's own connection are not lost: they come back when you select a preset without
+the Bambuddy agent.
+
+**OrcaSlicer 2.5.0-alpha at startup.** The alpha sometimes selects the printer preset before the
+plugin has loaded, and then does not start the Bambuddy agent. The plugin shows a notification
+when that happened; select another printer preset and then the Bambuddy one again.
 
 Then:
 
@@ -223,7 +236,9 @@ OrcaSlicer cannot see its AMS, so Bambuddy maps the filaments when it starts the
 - **Device tab**: the selected Bambuddy printer, live (state, progress, layer, remaining time,
   temperatures, AMS), refreshed every 3 seconds. Two-nozzle printers (H2D, H2D Pro, H2C) show
   both nozzles, the active one, and which AMS feeds which nozzle, and OrcaSlicer's print dialog
-  maps filaments per nozzle.
+  maps filaments per nozzle. When Bambuddy does not answer, the tab keeps the last known status
+  for 30 seconds, then shows the printer offline and the plugin tells you why; it recovers by
+  itself.
 - **Bambuddy tab**: all printers. Click a printer for a camera snapshot (**Refresh camera** for a
   new one). The tab polls only while it is visible.
 - **Notifications** after a send: *queued* (or *waiting for a manual start*), *started printing*,
@@ -266,6 +281,10 @@ If you prefer not to enable the experimental printer agents:
 | This plate was sliced for X1C, but *printer* is a A1 Mini | select the matching printer preset and slice again |
 | The plugin is not allowed to start its background threads | you answered No to the thread prompt: reinstall the plugin, or restart and answer Yes |
 | OrcaSlicer has not allowed the plugin to connect to *host* yet / did not allow the plugin to connect | OrcaSlicer 2.5.0-beta: restart OrcaSlicer after setting the URL, and answer Yes to the network prompt |
+| Device tab says "Connecting..." or "Failed to connect to the printer" | the plugin got no status from Bambuddy. A notification *no status of printer for 30 s* gives the reason; check that Bambuddy is reachable |
+| This printer preset has a print host set … | clear the print host of the printer preset, then select the printer from the Bambuddy list in the Device tab |
+| OrcaSlicer selected this printer preset before the Bambuddy printer agent was ready … | OrcaSlicer 2.5.0-alpha: select another printer preset and then the Bambuddy one again |
+| Bambuddy no longer has this printer | the printer was deleted or deactivated in Bambuddy; select another one |
 | The plugin may not read *file* … audit permission required | OrcaSlicer 2.5.0-beta refused a file read. For Print/Send, update the plugin and restart. For a file picked in the Bambuddy tab outside the export folder, answer Yes to OrcaSlicer's prompt and send again |
 
 The plugin logs to OrcaSlicer's Python log, `<data dir>/log/python_*.log`, with lines starting

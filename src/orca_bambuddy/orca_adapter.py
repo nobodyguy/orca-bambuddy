@@ -31,6 +31,11 @@ from . import ui
 __version__ = "0.3.1"
 AGENT_CAPABILITY = "Bambuddy printer agent"
 PAGE_CAPABILITY = "Bambuddy"
+AGENT_NOT_STARTED = (
+    "Bambuddy: OrcaSlicer selected this printer preset before the Bambuddy printer agent was "
+    "ready, so the Device tab does not list your Bambuddy printers. Select another printer "
+    "preset and then this one again."
+)
 
 log = logging.getLogger("orca_bambuddy")
 if not log.handlers:
@@ -103,6 +108,7 @@ class Runtime:
         self.agent = None  # the capability that stores the settings
         self.users = 0
         self.network_grant: str | None = None  # see declare_permissions()
+        self.inactive_reported = False  # see BambuddyAgent._check_live()
 
     @property
     def stopped(self) -> bool:
@@ -288,6 +294,14 @@ def declare_permissions() -> str | None:
     return origin
 
 
+def selected_printer_agent() -> str:
+    """The printer agent id the selected printer preset asks for ("" for the default)."""
+    try:
+        return orca.host.preset_bundle().full_config_value("printer_agent") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def slicer_context() -> dict:
     """Printer preset name and print host, for remembering and matching (UI thread)."""
     ctx = {}
@@ -395,7 +409,7 @@ class BambuddyAgent(orca.printer_agent.PrinterAgentBase):
         self.service.ensure_started()
         log.info("connect_printer(%s)", params.dev_id)
         self.service.agent.connected = params.dev_id
-        self.service.submit(self.service.agent_connect, params.dev_id, params.password)
+        self.service.submit_device(self.service.agent_connect, params.dev_id, params.password)
         return bd.OK
 
     def disconnect_printer(self):
@@ -428,6 +442,23 @@ class BambuddyAgent(orca.printer_agent.PrinterAgentBase):
         if event in (orca.LifecycleEvent.PrintJobStarted, orca.LifecycleEvent.SendJobStarted):
             if ctx.device_id.startswith(bd.DEV_ID_PREFIX) and ctx.name:
                 self.service.agent.job_titles[ctx.device_id] = ctx.name
+        elif event in (orca.LifecycleEvent.NewProject, orca.LifecycleEvent.ProjectOpened,
+                       orca.LifecycleEvent.ObjectAdded, orca.LifecycleEvent.PlateSelected):
+            self._check_live()
+
+    def _check_live(self):
+        # OrcaSlicer 2.5 picks the printer agent of the selected preset at startup, sometimes
+        # before this plugin has registered it (the plugin loads on another thread), and does
+        # not pick it again afterwards. The agent is then never started (start_discovery), and
+        # the Device tab lists no Bambuddy printers. A plugin cannot select a preset, so say
+        # what to do, once.
+        if RUNTIME.inactive_reported or self.service is None or self.service.agent.live:
+            return
+        if selected_printer_agent() != bd.AGENT_ID:
+            return
+        RUNTIME.inactive_reported = True
+        log.warning("The selected printer preset uses the Bambuddy agent, but OrcaSlicer has not started it")
+        RUNTIME.host.notify("warning", AGENT_NOT_STARTED)
 
     def start_send_gcode_to_sdcard(self, params, update_fn, cancel_fn, wait_fn):
         if params.project_name == "verify_job":

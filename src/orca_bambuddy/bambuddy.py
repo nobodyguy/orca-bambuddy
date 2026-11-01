@@ -404,8 +404,8 @@ class BambuddyClient:
     def printers(self) -> list[dict]:
         return self._json("GET", "/printers/")
 
-    def printer_status(self, printer_id: int) -> dict:
-        return self._json("GET", f"/printers/{int(printer_id)}/status")
+    def printer_status(self, printer_id: int, timeout: float | None = None) -> dict:
+        return self._json("GET", f"/printers/{int(printer_id)}/status", timeout=timeout)
 
     def camera_snapshot(self, printer_id: int) -> bytes:
         """One JPEG frame. The snapshot route takes a stream token instead of the API key."""

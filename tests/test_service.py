@@ -179,6 +179,7 @@ class AgentTest(ServiceTestBase):
         for key in ("ssdp", "local_message", "local_connect", "printer_connected"):
             self.service.agent.callbacks[key] = lambda *a, k=key: self.events.append((k, a))
         self.service.ensure_started()
+        self.service.agent.next_push = float("inf")  # the tests push themselves
 
     def params(self, **kw):
         base = dict(dev_id="bambuddy-00M01", dev_name="", filename=X1C_FILE, project_name="cube", task_name="",
@@ -209,6 +210,60 @@ class AgentTest(ServiceTestBase):
         self.service.agent_connect("bambuddy-gone", "code")
         self.assertEqual(self.events[-1][0], "local_connect")
         self.assertEqual(self.events[-1][1][0], 1)
+
+    def pushes(self):
+        return [json.loads(a[1])["print"] for k, a in self.events if k == "local_message" and "push_status" in a[1]]
+
+    def test_connect_to_a_print_host_device_explains(self):
+        # OrcaSlicer makes this device from the preset's print host field.
+        self.service.agent_connect("192.168.1.50:8000", "88888888")
+        self.assertEqual(self.events[-1][0], "local_connect")
+        self.assertEqual(self.events[-1][1][0], 1)
+        self.assertIn("print host", self.host.notes[-1][1])
+
+    def test_connect_reports_why_the_printer_list_failed(self):
+        self.server.route("GET", "/api/v1/printers/", status=401, body={"detail": "Invalid API key"})
+        self.service.agent_connect("bambuddy-00M01", "code")
+        self.assertEqual(self.events[-1][1][0], 1)
+        self.assertIn("API key", self.events[-1][1][2])
+        self.assertEqual(self.host.notes[-1][0], "error")
+
+    def test_status_keeps_coming_while_bambuddy_does_not_answer(self):
+        self.service.agent_announce()
+        self.service.agent.connected = "bambuddy-00M01"
+        self.service.agent_push_status()
+        self.server.route("GET", "/api/v1/printers/1/status", status=502, body={"detail": "Bad gateway"})
+        self.service.agent_push_status()  # last known status
+        self.assertEqual([p["gcode_state"] for p in self.pushes()], ["IDLE", "IDLE"])
+        self.assertEqual(self.host.notes, [])
+        with mock.patch.object(svc, "STATUS_STALE_S", 0):
+            self.service.agent_push_status()
+            self.service.agent_push_status()
+        self.assertEqual([p["gcode_state"] for p in self.pushes()][2:], ["OFFLINE", "OFFLINE"])
+        self.assertEqual([lvl for lvl, _ in self.host.notes], ["warning"])  # once
+        self.server.route("GET", "/api/v1/printers/1/status", body={"id": 1, "connected": True, "state": "RUNNING"})
+        self.service.agent_push_status()
+        self.assertEqual(self.pushes()[-1]["gcode_state"], "RUNNING")
+        self.assertEqual(self.host.notes[-1][0], "info")
+
+    def test_status_without_any_answer_is_offline(self):
+        self.service.agent_announce()
+        self.server.route("GET", "/api/v1/printers/1/status", status=502, body={"detail": "Bad gateway"})
+        self.service.agent.connected = "bambuddy-00M01"
+        self.service.agent_push_status()
+        self.assertEqual(self.pushes()[-1]["gcode_state"], "OFFLINE")
+
+    def test_device_thread_connects(self):
+        self.assertIn("bambuddy-device", [t.name for t in __import__("threading").enumerate()])
+        self.service.agent_announce()
+        self.events.clear()
+        self.service.agent.connected = "bambuddy-00M01"
+        self.service.submit_device(self.service.agent_connect, "bambuddy-00M01", "code")
+        for _ in range(50):
+            if any(k == "printer_connected" for k, _ in self.events):
+                break
+            __import__("time").sleep(0.1)
+        self.assertEqual(self.events[-1][0], "printer_connected")
 
     def test_commands(self):
         self.assertEqual(self.service.agent_command("d", '{"info":{"command":"get_version"}}'), bd.OK)

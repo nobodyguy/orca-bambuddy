@@ -81,6 +81,21 @@ Printer agent methods implemented: `get_agent_info`, all nine `set_*_fn` callbac
   which is what Bambuddy's queue takes (it rebuilds `ams_mapping2` itself, and uses 254 only on
   two-nozzle printers).
 
+### Device tab connection
+
+Read from `DeviceManager.cpp` (2.5.0-alpha):
+- "Connecting..." (`is_connecting()`) lasts until one `push_status` is parsed after the printer was
+  selected; "Failed to connect to the printer" follows 30 s without any message
+  (`DISCONNECT_TIMEOUT`). OrcaSlicer never reconnects by itself; any message brings it back.
+  `local_connect` Lost would deselect the printer, so the plugin never sends it.
+- SSDP records do not expire; one announce is enough.
+- The plugin therefore sends a status every 3 s even when Bambuddy fails: the last known one for
+  `STATUS_STALE_S` (30 s), then `gcode_state` OFFLINE, with one warning notification per failure
+  streak and an info when it is back. The status request of the device thread times out after
+  8 s (`DEVICE_STATUS_TIMEOUT_S`).
+- A preset with a print host makes `GUI_App::select_machine` select a device named after that
+  address (`dev_id_from_address`). `connect_printer` refuses it with an explanation.
+
 ### Two-nozzle printers (H2D, H2D Pro, H2C)
 
 OrcaSlicer takes the extruder count only from `print.device.extruder.state` bits 0-3, and reads
@@ -110,6 +125,18 @@ sticky per device):
 Single-nozzle printers get the same push as 0.3.1 plus `support_send_to_sd` (checked against the
 0.3.1 code). The temperature and AMS controls of the Device tab still answer "not supported".
 
+### Agent not started at startup (2.5.0-alpha)
+
+The plugin loads on a background thread; its printer agent is registered on the UI thread
+later. At startup `switch_printer_agent` can run in between ("agent ID 'bambuddy' is
+unregistered"), and nothing switches again after the registration, so `start_discovery` is never
+called and the Device tab lists no Bambuddy printers until another preset is selected. Seen on
+every start of the headless 2.5.0-alpha; the 2.5.0-beta switched again after registering. A
+plugin cannot select a preset, so `BambuddyAgent._check_live` posts one warning on the first
+NewProject, ProjectOpened, ObjectAdded or PlateSelected event while the selected preset asks for
+`bambuddy` and the agent has not started (PresetSelected is skipped: it fires around OrcaSlicer's
+own switch).
+
 ### Threading and the permission (audit) model
 
 - Agent methods run on the UI thread (selection, discovery, connect) or on OrcaSlicer job threads
@@ -121,9 +148,13 @@ Single-nozzle printers get the same push as 0.3.1 plus `support_send_to_sd` (che
 - In 2.5.0-alpha, threads the plugin starts are not attributed to it (thread-local audit context;
   2.5.0-beta changed this, see below), and thread creation is a single persisted grant
   (`threading: ["thread"]`).
-- Therefore the plugin does all network and file I/O on two long-lived threads (worker and send
-  runner). They are started on the first **UI-thread** entry (`start_discovery`, `connect_printer`
-  or a page message), so the one thread prompt appears inline. A re-entrancy guard is needed
+- Therefore the plugin does all network and file I/O on three long-lived threads: the worker
+  (Bambuddy tab, job tracking), the send runner, and the device thread (discovery, connect, the
+  Device tab status and replies to OrcaSlicer's queries). The device thread is separate so that a
+  page refresh of every printer, each request with the full timeout, cannot delay the status
+  OrcaSlicer needs within 30 s (see "Device tab connection"). They are started on the first
+  **UI-thread** entry (`start_discovery`, `connect_printer` or a page message), so the one thread
+  prompt appears inline. A re-entrancy guard is needed
   because the modal prompt runs a nested event loop that delivers further page messages.
   Previously this showed two prompts; now one.
 - Host UI calls are safe from those threads: `post_message` uses `CallAfter`, and
@@ -329,10 +360,11 @@ On the wire it is checked by the unit tests only; there was no real proxy to tes
 | The bundled Python has an empty CA store (OpenSSL's paths point at the CI build machine). | `bambuddy.SYSTEM_CA_FILES` fallback plus a CA file setting. |
 | Notifications of level Regular/PrintInfo fade after 10 s, and after a print OrcaSlicer switches to the Device tab. | Successes and milestones use Important (20 s); errors use Error (stay). |
 | Activating the plugin mid-session registers the agent but does not make it live for the already-selected preset. | README: restart, or re-select the preset. |
+| 2.5.0-alpha: at startup the preset's agent can be looked up before the plugin registers it, and is not looked up again. | A one-time notification asks to re-select the preset (see "Agent not started at startup"). |
 
 ## Verification log
 
-Automated (`python3 -m unittest discover -s tests`): 123 tests, 5 of them live tests that skip
+Automated (`python3 -m unittest discover -s tests`): 137 tests, 5 of them live tests that skip
 without `BAMBUDDY_TEST_URL`. They cover:
 - the REST client against a scripted HTTP server: headers, every error class including Cloudflare
   redirect, 403 and 413, timeouts, refused connections, multipart streaming, cancel, camera token
@@ -395,3 +427,23 @@ Not verified:
 - "Open in Bambuddy" links in a real browser. In the headless test a stand-in `xdg-open` on `PATH`
   logged the launches. Beta: `['xdg-open', 'http://localhost:18001/']` is part of the startup
   prompt; the first click and a notification link open it with no prompt. Alpha: no prompt.
+
+0.4.0 (2026-11-01), for two OrcaCloud reports: an H2D shown badly in the Device tab, and a
+connection that stayed "waiting". Against a scripted Bambuddy (an X1C, and an H2D with the
+status shape of Bambuddy 1.2.5.7: two AMS on different sides, an AMS HT, both external spools,
+0.4 left / 0.6 high-flow right), in both AppImages on Xvfb with a separate `--datadir`. Dropdowns
+and the printer popup render once a window manager runs on the test display (`xfwm4` on `:99`).
+
+| Check | 2.5.0-alpha | 2.5.0-beta |
+|---|---|---|
+| H2D in the Device tab: both nozzle temperatures, active nozzle, AMS on the left and right sides, no assert | ✓ | ✓ |
+| X1C afterwards: unchanged single-nozzle view | ✓ | |
+| Nozzle sync into the preset: 0.4 left, 0.6 high flow right, AMS per nozzle | ✓ (on connect) | ✓ (sync button) |
+| Print dialog for the H2D: no blocking message, filament mapped to the right-side AMS; queue item with `ams_mapping` [0] | ✓ | ✓ |
+| Send dialog (send to printer storage) opens and queues a staged item | ✓ | |
+| `/status` stalled for 45 s: last status, then offline, still connected; one warning; recovers | ✓ | |
+| Agent not started at startup: one notification; re-selecting the preset starts it | ✓ (every start) | not seen |
+| No audit denial with the third thread | | ✓ |
+
+Not verified: a real H2D, H2D Pro or H2C (the field mapping comes from Bambuddy's and
+OrcaSlicer's sources); the print-host case in the GUI (unit-tested).

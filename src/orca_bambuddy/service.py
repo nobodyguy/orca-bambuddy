@@ -63,6 +63,12 @@ TRACK_MAX_AGE_S = 24 * 3600
 PRINTER_LIST_INTERVAL_S = 60
 ANNOUNCE_INTERVAL_S = 30
 DEVICE_PUSH_INTERVAL_S = 3
+# OrcaSlicer marks a LAN printer disconnected after 30 s without a message
+# (DISCONNECT_TIMEOUT), so a status request of the Device tab must not take longer.
+DEVICE_STATUS_TIMEOUT_S = 8
+# While Bambuddy does not answer, the Device tab keeps the last known status this long,
+# then shows the printer offline; the user is told once.
+STATUS_STALE_S = 30
 NO_THREADS = (
     "The plugin is not allowed to start its background threads. Restart OrcaSlicer, open the "
     "Bambuddy tab and answer Yes to the permission prompt."
@@ -70,6 +76,11 @@ NO_THREADS = (
 RESTART_FOR_NETWORK = (
     "OrcaSlicer has not allowed the plugin to connect to {host} yet. Restart OrcaSlicer and "
     "answer Yes when it asks for network access to {host}."
+)
+PRINT_HOST_DEVICE = (
+    "This printer preset has a print host set, so OrcaSlicer connects to that address instead "
+    "of a Bambuddy printer. Clear the print host in the printer preset, then select the "
+    "printer from the Bambuddy list in the Device tab."
 )
 
 
@@ -340,6 +351,7 @@ class Service:
         self.server_version = ""
         self._tasks: queue.Queue = queue.Queue()
         self._jobs: queue.Queue = queue.Queue()
+        self._device_tasks: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._starting = False
@@ -357,9 +369,11 @@ class Service:
     # ---- lifecycle ------------------------------------------------------------
 
     def ensure_started(self) -> bool:
-        """Start the two plugin threads: a worker for requests and polling, and a runner
-        for sends. Call it on the UI thread: OrcaSlicer asks the user once for permission
-        to create threads, and off the UI thread the first attempt is refused."""
+        """Start the plugin threads: a worker for the Bambuddy tab, job tracking and other
+        requests, a runner for sends, and one for OrcaSlicer's device list and Device tab, so
+        a slow page refresh cannot hold up the status OrcaSlicer needs every few seconds.
+        Call it on the UI thread: OrcaSlicer asks the user once for permission to create
+        threads, and off the UI thread the first attempt is refused."""
         if self._thread is not None:
             return True
         # The permission prompt runs a nested event loop, which can deliver another
@@ -372,6 +386,7 @@ class Service:
             worker.start()
             self._thread = worker
             threading.Thread(target=self._run_jobs, name="bambuddy-send", daemon=True).start()
+            threading.Thread(target=self._run_device, name="bambuddy-device", daemon=True).start()
         except (PermissionError, RuntimeError) as e:
             log.warning("Could not start the plugin threads: %s", e)
         finally:
@@ -386,6 +401,7 @@ class Service:
         self._stop.set()
         self._tasks.put(None)
         self._jobs.put(None)
+        self._device_tasks.put(None)
 
     @property
     def stopped(self) -> bool:
@@ -420,6 +436,10 @@ class Service:
     def submit(self, fn, *args) -> None:
         self._tasks.put((fn, args))
 
+    def submit_device(self, fn, *args) -> None:
+        """Run on the device thread (connect and replies to OrcaSlicer's device layer)."""
+        self._device_tasks.put((fn, args))
+
     # ---- worker ---------------------------------------------------------------
 
     def _run(self) -> None:
@@ -440,6 +460,19 @@ class Service:
             if self._tracked and now >= self._next_track:
                 self._next_track = now + TRACK_INTERVAL_S
                 self._safely(self.poll_tracked)
+
+    def _run_device(self) -> None:
+        while not self._stop.is_set():
+            try:
+                task = self._device_tasks.get(timeout=0.5)
+            except queue.Empty:
+                task = None
+            if self._stop.is_set():
+                break
+            if task:
+                fn, args = task
+                self._safely(fn, *args)
+            now = time.monotonic()
             if self.agent.live and now >= self.agent.next_announce:
                 self.agent.next_announce = now + ANNOUNCE_INTERVAL_S
                 self._safely(self.agent_announce)
@@ -866,20 +899,30 @@ class Service:
             if p.get("is_active", True):
                 fn(bd.ssdp_record(p, host))
 
+    def _connect_failed(self, dev: str, reason: str) -> None:
+        self.agent.emit("local_connect", 1, dev, reason)
+        self.host.notify("error", "Bambuddy: " + reason)
+
     def agent_connect(self, dev: str, access_code: str) -> None:
         """connect_printer(): report the version, a first status, then 'connected'."""
         client = self.client
-        if client is None or self.printer_for_dev(dev) is None:
-            self.agent.emit("local_connect", 1, dev, self._no_client("Bambuddy is not configured or the printer is gone"))
-            if self.client_problem:
-                self.host.notify("error", "Bambuddy: " + self.client_problem)
+        if not dev.startswith(bd.DEV_ID_PREFIX):
+            # OrcaSlicer made this device from the preset's print host (GUI_App::select_machine).
+            self._connect_failed(dev, PRINT_HOST_DEVICE)
+            return
+        if client is None:
+            self._connect_failed(dev, self._no_client("Bambuddy URL not set. Enter it in the Bambuddy tab."))
             return
         try:
+            printer = self.printer_for_dev(dev)
             self.server_version = self.server_version or client.version()
         except BambuddyError as e:
-            self.agent.emit("local_connect", 1, dev, e.message)
-            self.host.notify("error", "Bambuddy: " + e.message)
+            self._connect_failed(dev, e.message)
             return
+        if printer is None:
+            self._connect_failed(dev, "Bambuddy no longer has this printer (or it is turned off in Bambuddy).")
+            return
+        self.agent.failing_since, self.agent.failure_reported = None, False
         self.agent.access_code = access_code
         self.agent.emit("local_message", dev, bd.version_info(self.server_version))
         self.agent_push_status()
@@ -887,29 +930,53 @@ class Service:
         self.agent.emit("printer_connected", dev)
 
     def agent_push_status(self) -> None:
+        """A status for the Device tab. OrcaSlicer shows "Connecting..." until the first one
+        arrives and drops the printer 30 s after the last, so one goes out even when Bambuddy
+        does not answer: the last known status, and after STATUS_STALE_S an offline one."""
         dev = self.agent.connected
         client = self.client
         printer = bd.find_printer(self._printers, dev or "")
         if not dev or client is None or printer is None:
             return
+        a = self.agent
         try:
-            status = client.printer_status(printer["id"])
+            status = client.printer_status(printer["id"], timeout=min(client.conn.timeout, DEVICE_STATUS_TIMEOUT_S))
         except BambuddyError as e:
-            log.warning("Status of %s failed: %s", dev, e.message)
-            return
+            status = self._status_failed(dev, printer, e)
+        else:
+            if a.failing_since is not None:
+                log.info("Status of %s is back", dev)
+                if a.failure_reported:
+                    self.host.notify("info", f"Bambuddy: the status of {printer.get('name') or dev} is back.")
+            a.failing_since, a.failure_reported = None, False
+            a.last_status[dev] = status
         # Sticky: an offline status must not turn a two-hotend printer into a one-hotend one.
-        self.agent.dual[dev] = self.agent.dual.get(dev, False) or bd.is_dual(printer, status)
-        self.agent.sequence += 1
-        self.agent.emit("local_message", dev, bd.push_status(status, self.agent.sequence, self.agent.dual[dev]))
+        a.dual[dev] = a.dual.get(dev, False) or bd.is_dual(printer, status)
+        a.sequence += 1
+        a.emit("local_message", dev, bd.push_status(status, a.sequence, a.dual[dev]))
+
+    def _status_failed(self, dev: str, printer: dict, e: BambuddyError) -> dict:
+        a = self.agent
+        now = time.monotonic()
+        if a.failing_since is None:
+            a.failing_since = now
+            log.warning("Status of %s failed: %s", dev, e.message)
+        if now - a.failing_since < STATUS_STALE_S and dev in a.last_status:
+            return a.last_status[dev]
+        if not a.failure_reported:
+            a.failure_reported = True
+            name = printer.get("name") or dev
+            self.host.notify("warning", f"Bambuddy: no status of {name} for {STATUS_STALE_S} s: {e.message}")
+        return {"connected": False}
 
     def agent_command(self, dev: str, json_str: str) -> int:
         """send_message*(): answer the queries the device layer needs; no printer control yet."""
         section, command = bd.command_of(json_str)
         if section == "info" and command == "get_version":
-            self.submit(lambda: self.agent.emit("local_message", dev, bd.version_info(self.server_version or "?")))
+            self.submit_device(lambda: self.agent.emit("local_message", dev, bd.version_info(self.server_version or "?")))
             return bd.OK
         if section == "system" and command == "get_access_code":
-            self.submit(lambda: self.agent.emit("local_message", dev, bd.access_code_reply(self.agent.access_code)))
+            self.submit_device(lambda: self.agent.emit("local_message", dev, bd.access_code_reply(self.agent.access_code)))
             return bd.OK
         if section == "pushing" or (section == "print" and command in ("push_status", "pushall")):
             self.agent.next_push = 0.0
@@ -918,12 +985,11 @@ class Service:
         return bd.ERR_NOT_SUPPORTED
 
     def printer_for_dev(self, dev: str) -> dict | None:
+        """The Bambuddy printer of a device id, fetching the list if needed. Raises
+        BambuddyError when the list cannot be fetched."""
         printer = bd.find_printer(self._printers, dev)
         if printer is None and self.client is not None:
-            try:
-                printer = bd.find_printer(self._fetch_printers(self.client, force=True), dev)
-            except BambuddyError:
-                pass
+            printer = bd.find_printer(self._fetch_printers(self.client, force=True), dev)
         return printer
 
     def printer_name(self, dev: str) -> str:
@@ -1027,7 +1093,10 @@ class AgentState:
     next_push: float = 0.0
     callbacks: dict = field(default_factory=dict)
     job_titles: dict = field(default_factory=dict)  # dev_id -> name from the print dialog
+    last_status: dict = field(default_factory=dict)  # dev_id -> last status Bambuddy returned
     dual: dict = field(default_factory=dict)  # dev_id -> printer has two hotends
+    failing_since: float | None = None  # status requests of the connected printer failing since
+    failure_reported: bool = False
 
     def emit(self, key: str, *args) -> None:
         fn = self.callbacks.get(key)
