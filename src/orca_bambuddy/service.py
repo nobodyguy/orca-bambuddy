@@ -897,8 +897,10 @@ class Service:
         except BambuddyError as e:
             log.warning("Status of %s failed: %s", dev, e.message)
             return
+        # Sticky: an offline status must not turn a two-hotend printer into a one-hotend one.
+        self.agent.dual[dev] = self.agent.dual.get(dev, False) or bd.is_dual(printer, status)
         self.agent.sequence += 1
-        self.agent.emit("local_message", dev, bd.push_status(status, self.agent.sequence))
+        self.agent.emit("local_message", dev, bd.push_status(status, self.agent.sequence, self.agent.dual[dev]))
 
     def agent_command(self, dev: str, json_str: str) -> int:
         """send_message*(): answer the queries the device layer needs; no printer control yet."""
@@ -1025,6 +1027,7 @@ class AgentState:
     next_push: float = 0.0
     callbacks: dict = field(default_factory=dict)
     job_titles: dict = field(default_factory=dict)  # dev_id -> name from the print dialog
+    dual: dict = field(default_factory=dict)  # dev_id -> printer has two hotends
 
     def emit(self, key: str, *args) -> None:
         fn = self.callbacks.get(key)

@@ -63,6 +63,35 @@ class FakeServer:
         self.httpd.server_close()
 
 
+# GET /printers/{id}/status of an H2D in Bambuddy 1.2.5.7 (schemas/printer.py, bambu_mqtt.py):
+# "nozzle" is the left hotend (id 1) and "nozzle_2" the right one (id 0), while nozzles[] and
+# nozzle_rack[] are indexed by hotend id. nozzles[0] may hold the legacy material name.
+H2D_STATUS = {
+    "connected": True,
+    "state": "IDLE",
+    "active_extruder": 1,
+    "temperatures": {"nozzle": 215.6, "nozzle_target": 220, "nozzle_2": 31.2, "nozzle_2_target": 0,
+                     "bed": 60, "bed_target": 60, "_nozzle_target_set_time": 12.5},
+    "nozzles": [{"nozzle_type": "hardened_steel", "nozzle_diameter": "0.6"}, {"nozzle_type": "HS01", "nozzle_diameter": "0.4"}],
+    "nozzle_rack": [{"id": 0, "nozzle_type": "HH01", "nozzle_diameter": "0.6"}, {"id": 1, "nozzle_type": "HS01", "nozzle_diameter": "0.4"}],
+    "extruder_slots": {"0": {"ams_id": None, "slot_id": None, "has_filament": False},
+                       "1": {"ams_id": 1, "slot_id": 2, "has_filament": True}},
+    "ams_extruder_map": {"0": 0, "1": 1, "128": 1},
+    "ams": [
+        {"id": 0, "module_type": "n3f", "humidity": 20, "temp": 26.0,
+         "tray": [{"id": 0, "tray_type": "PLA", "tray_color": "ff0000ff"}, {"id": 1}, {"id": 2}, {"id": 3}]},
+        {"id": 1, "module_type": "ams", "humidity": 30, "temp": 25.0,
+         "tray": [{"id": 0}, {"id": 1}, {"id": 2, "tray_type": "PETG", "tray_color": "00ff00ff"}, {"id": 3}]},
+        {"id": 128, "module_type": "n3s", "is_ams_ht": True, "humidity": 10, "temp": 40.0,
+         "tray": [{"id": 0, "tray_type": "PA", "tray_color": "000000ff"}]},
+    ],
+    "vt_tray": [{"id": 254, "tray_type": "TPU", "tray_color": "ffffffff", "nozzle_temp_min": 200, "nozzle_temp_max": 240},
+                {"id": 255, "tray_type": ""}],
+    "tray_now": 6,
+}
+H2D_PRINTER = {"id": 4, "name": "H2D", "model": "H2D", "serial_number": "0948H2D", "location": "", "is_active": True, "nozzle_count": 2}
+
+
 def bambuddy_routes(server, *, printers=None, statuses=None, permissions=None, auth_enabled=True):
     """A minimal Bambuddy 1.2.5.7 with an upload counter and a queue."""
     printers = printers or [

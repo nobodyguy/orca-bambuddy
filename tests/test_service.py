@@ -7,7 +7,7 @@ import zipfile
 from types import SimpleNamespace
 from unittest import mock
 
-from fakes import FIXTURES, FakeHost, FakeServer, bambuddy_routes, make_sliced_3mf
+from fakes import FIXTURES, H2D_PRINTER, H2D_STATUS, FakeHost, FakeServer, bambuddy_routes, make_sliced_3mf
 
 from orca_bambuddy import bambu_dialect as bd
 from orca_bambuddy import service as svc
@@ -261,6 +261,44 @@ class AgentTest(ServiceTestBase):
         self.assertEqual(code, bd.ERR_UPLOAD_FAILED)
         self.assertEqual(updates[-1][0], bd.STAGE_ERROR)
         self.assertIn("can_manage_library", updates[-1][2])
+
+
+class DualHotendAgentTest(unittest.TestCase):
+    def setUp(self):
+        self.server = FakeServer()
+        x1c = {"id": 1, "name": "X1C", "model": "X1C", "serial_number": "00M01", "is_active": True, "nozzle_count": 1}
+        bambuddy_routes(self.server, printers=[x1c, H2D_PRINTER],
+                        statuses={1: {"id": 1, "connected": True, "state": "IDLE"}, 4: H2D_STATUS})
+        self.storage = tempfile.mkdtemp()
+        self.service = svc.Service(FakeHost(), self.storage)
+        self.service.configure({"base_url": self.server.url, "api_key": "k"})
+        self.events = []
+        self.service.agent.callbacks["local_message"] = lambda dev, msg: self.events.append(json.loads(msg))
+
+    def tearDown(self):
+        self.service.stop()
+        self.server.close()
+        shutil.rmtree(self.storage)
+
+    def push(self, dev):
+        self.service.agent.connected = dev
+        self.service.agent_push_status()
+        return self.events[-1]["print"]
+
+    def test_only_two_hotend_printers_get_the_device_block(self):
+        self.service._fetch_printers(self.service.client)
+        h2d = self.push("bambuddy-0948H2D")
+        self.assertEqual(h2d["device"]["extruder"]["state"] & 0xF, 2)
+        x1c = self.push("bambuddy-00M01")
+        self.assertNotIn("device", x1c)
+        self.assertNotIn("cfg", x1c)
+
+    def test_offline_two_hotend_printer_keeps_two_hotends(self):
+        self.service._fetch_printers(self.service.client)
+        self.service._printers[1] = dict(H2D_PRINTER, nozzle_count=None)  # known from the status only
+        self.push("bambuddy-0948H2D")
+        self.server.route("GET", "/api/v1/printers/4/status", body={"id": 4, "connected": False})
+        self.assertIn("device", self.push("bambuddy-0948H2D"))
 
 
 class MilestoneTest(ServiceTestBase):

@@ -104,6 +104,63 @@ class DialectTest(unittest.TestCase):
         self.assertEqual(trays[0]["tray_color"], "FF0000FF")
         self.assertEqual(trays[1], {"id": "1"})  # empty slot
 
+    def test_single_hotend_message_is_unchanged(self):
+        st = {"connected": True, "state": "IDLE", "temperatures": {"nozzle": 25, "bed": 22},
+              "nozzles": [{"nozzle_type": "stainless_steel", "nozzle_diameter": "0.4"}, {"nozzle_type": "", "nozzle_diameter": ""}],
+              "ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA", "tray_color": "ffffffff"}]}], "tray_now": 255}
+        p = json.loads(bd.push_status(st, 3))["print"]
+        self.assertEqual(p, {
+            "command": "push_status", "msg": 0, "sequence_id": "3", "gcode_state": "IDLE", "print_type": "local",
+            "sdcard": True, "support_send_to_sd": True, "mc_print_error_code": "0", "print_error": 0, "mc_percent": 0,
+            "mc_remaining_time": 0, "layer_num": 0, "total_layer_num": 0, "subtask_name": "", "gcode_file": "",
+            "stg_cur": -1, "wifi_signal": "", "nozzle_temper": 25.0, "bed_temper": 22.0,
+            "nozzle_diameter": "0.4", "nozzle_type": "stainless_steel",
+            "ams": {"ams": [{"id": "0", "humidity": "", "temp": "", "tray": [
+                {"id": "0", "tray_type": "PLA", "tray_color": "FFFFFFFF", "tray_info_idx": "", "tray_sub_brands": "",
+                 "tray_id_name": "", "remain": 0, "nozzle_temp_min": "", "nozzle_temp_max": ""}]}],
+                "ams_exist_bits": "1", "tray_exist_bits": "1", "tray_now": "255", "version": 1},
+        })
+
+    def test_is_dual(self):
+        self.assertTrue(bd.is_dual({"nozzle_count": 2}, {}))
+        self.assertTrue(bd.is_dual({}, {"extruder_slots": {"0": {}, "1": {}}}))
+        self.assertFalse(bd.is_dual({"nozzle_count": 1}, {"extruder_slots": {}}))
+        self.assertFalse(bd.is_dual(None, None))
+
+    def test_two_hotend_message(self):
+        from fakes import H2D_STATUS
+
+        p = json.loads(bd.push_status(H2D_STATUS, 1, dual=True))["print"]
+        # OrcaSlicer reads print.device only with all four, as hex strings; aux bits 12-13 = 1
+        # report the storage present.
+        self.assertEqual((p["cfg"], p["fun"], p["stat"]), ("", "", ""))
+        self.assertEqual(int(p["aux"], 16) >> 12 & 3, 1)
+        ext = p["device"]["extruder"]
+        self.assertEqual(ext["state"] & 0xF, 2)  # two extruders
+        self.assertEqual((ext["state"] >> 4 & 0xF, ext["state"] >> 8 & 0xF), (1, 1))  # left one active
+        right, left = ext["info"]
+        required = {"id", "filam_bak", "info", "temp", "spre", "snow", "star", "stat", "hnow"}
+        self.assertEqual((set(right), set(left)), (required, required))
+        self.assertEqual((right["id"], left["id"], right["hnow"], left["hnow"]), (0, 1, 0, 1))
+        self.assertEqual((right["temp"] & 0xFFFF, right["temp"] >> 16), (31, 0))  # nozzle_2 = right
+        self.assertEqual((left["temp"] & 0xFFFF, left["temp"] >> 16), (216, 220))  # nozzle = left
+        self.assertEqual((right["snow"], left["snow"]), (0xFFFF, 1 << 8 | 2))
+        self.assertEqual((right["info"], left["info"]), (8, 10))  # nozzle present; left also loaded
+        nozzles = p["device"]["nozzle"]["info"]
+        self.assertEqual(nozzles, [{"id": 0, "diameter": 0.6, "type": "HH01"}, {"id": 1, "diameter": 0.4, "type": "HS01"}])
+        self.assertEqual([s["id"] for s in p["vir_slot"]], ["255", "254"])
+        self.assertEqual(p["vir_slot"][0], {"id": "255"})  # empty right spool
+        self.assertEqual((p["vir_slot"][1]["tray_type"], p["vir_slot"][1]["nozzle_temp_max"]), ("TPU", "240"))
+        infos = {u["id"]: u["info"] for u in p["ams"]["ams"]}
+        self.assertEqual(infos, {"0": "3", "1": "101", "128": "104"})  # type | hotend << 8
+
+    def test_two_hotend_message_without_data(self):
+        p = json.loads(bd.push_status({"connected": False}, 1, dual=True))["print"]
+        self.assertEqual(p["gcode_state"], "OFFLINE")
+        self.assertEqual([e["snow"] for e in p["device"]["extruder"]["info"]], [0xFFFF, 0xFFFF])
+        self.assertEqual(p["device"]["nozzle"]["info"][0], {"id": 0, "diameter": 0.0, "type": ""})
+        self.assertEqual(len(p["vir_slot"]), 2)
+
     def test_offline_printer(self):
         p = json.loads(bd.push_status({"connected": False, "state": "IDLE"}, 1))["print"]
         self.assertEqual(p["gcode_state"], "OFFLINE")
@@ -126,6 +183,19 @@ class DialectTest(unittest.TestCase):
         opts = bd.queue_options(params)
         self.assertNotIn("ams_mapping", opts)
         self.assertNotIn("use_ams", opts)
+
+    def test_external_spools_come_from_ams_mapping2(self):
+        # OrcaSlicer writes -1 for an external spool in ams_mapping and names it in ams_mapping2;
+        # 255/255 there is an unmapped filament.
+        params = SimpleNamespace(
+            ams_mapping="[-1,4,-1,-1]", task_use_ams=True,
+            ams_mapping2='[{"ams_id":254,"slot_id":0},{"ams_id":1,"slot_id":0},{"ams_id":255,"slot_id":255},{"ams_id":255,"slot_id":0}]',
+        )
+        self.assertEqual(bd.queue_options(params)["ams_mapping"], [254, 4, -1, 255])
+        only_external = SimpleNamespace(ams_mapping="[-1]", ams_mapping2='[{"ams_id":255,"slot_id":0}]', task_use_ams=False)
+        self.assertEqual(bd.queue_options(only_external)["ams_mapping"], [255])
+        mismatched = SimpleNamespace(ams_mapping="[-1,0]", ams_mapping2='[{"ams_id":254,"slot_id":0}]')
+        self.assertEqual(bd.queue_options(mismatched)["ams_mapping"], [-1, 0])
 
     def test_job_name(self):
         self.assertEqual(job_name_from_params(SimpleNamespace(project_name="cube", filename="/tmp/x/.123.0.3mf")), "cube.gcode.3mf")

@@ -101,10 +101,31 @@ def access_code_reply(code: str) -> str:
 
 
 def _num(value, default=None):
-    return value if isinstance(value, (int, float)) else default
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
 
 
-def _ams(status: dict) -> dict | None:
+def is_dual(printer: dict | None, status: dict | None) -> bool:
+    """A two-hotend printer (H2D, H2D Pro, H2C). Bambuddy's printer list has nozzle_count;
+    the status names the slot each hotend is fed from."""
+    if _num((printer or {}).get("nozzle_count"), 1) >= 2:
+        return True
+    return len((status or {}).get("extruder_slots") or {}) >= 2
+
+
+# OrcaSlicer's AMS type ids (DevFilaSystem.cpp): 1 AMS, 3 AMS 2 Pro (n3f), 4 AMS HT (n3s).
+AMS_TYPES = {"ams": 1, "n3f": 3, "n3s": 4}
+
+
+def _ams_info(unit: dict, extruder_map: dict) -> str:
+    """ams[].info of a dual-hotend printer: the type in bits 0-3, the hotend it feeds in
+    bits 8-11. OrcaSlicer drops a unit whose hotend is 0xE, so it is never sent."""
+    kind = AMS_TYPES.get(unit.get("module_type") or "") or (4 if unit.get("is_ams_ht") else 1)
+    extruder = extruder_map.get(str(unit.get("id", 0)))
+    extruder = extruder if extruder in (0, 1) else 0
+    return format(kind | extruder << 8, "x")
+
+
+def _ams(status: dict, dual: bool = False) -> dict | None:
     units = status.get("ams") or []
     if not units:
         return None
@@ -134,9 +155,10 @@ def _ams(status: dict) -> dict | None:
             trays.append(entry)
         if uid < 4:
             exist_bits |= 1 << uid
-        ams_list.append(
-            {"id": str(uid), "humidity": str(unit.get("humidity") or ""), "temp": str(unit.get("temp") or ""), "tray": trays}
-        )
+        entry = {"id": str(uid), "humidity": str(unit.get("humidity") or ""), "temp": str(unit.get("temp") or ""), "tray": trays}
+        if dual:
+            entry["info"] = _ams_info(unit, status.get("ams_extruder_map") or {})
+        ams_list.append(entry)
     return {
         "ams": ams_list,
         "ams_exist_bits": format(exist_bits, "x"),
@@ -146,7 +168,95 @@ def _ams(status: dict) -> dict | None:
     }
 
 
-def push_status(status: dict, sequence: int) -> str:
+def _packed_temp(current, target) -> int:
+    return max(0, round(_num(target, 0))) << 16 | max(0, round(_num(current, 0)))
+
+
+def _slot_code(slot: dict) -> int:
+    """(ams_id << 8) | slot_id, 0xFFFF for a hotend not fed from any slot (Bambu's encoding)."""
+    ams_id, slot_id = slot.get("ams_id"), slot.get("slot_id")
+    if _num(ams_id) is None or _num(slot_id) is None:
+        return 0xFFFF
+    return (int(ams_id) & 0xFF) << 8 | int(slot_id) & 0xFF
+
+
+def _nozzle(status: dict, hotend: int) -> dict:
+    """device.nozzle.info entry. Bambuddy's nozzle_rack holds the printer's own type code
+    (e.g. "HS01": high flow, hardened steel), from which OrcaSlicer reads the flow type;
+    nozzles[] may hold a plain material name from the legacy field instead."""
+    rack = next((n for n in status.get("nozzle_rack") or [] if n.get("id") == hotend), None)
+    nozzles = status.get("nozzles") or []
+    src = rack or (nozzles[hotend] if hotend < len(nozzles) else {}) or {}
+    try:
+        diameter = float(src.get("nozzle_diameter") or 0)
+    except (TypeError, ValueError):
+        diameter = 0.0
+    kind = str(src.get("nozzle_type") or "")
+    # "N/A" means an unknown flow type, which blocks printing in OrcaSlicer's print dialog.
+    return {"id": hotend, "diameter": diameter, "type": "" if kind == "N/A" else kind}
+
+
+def _extruder(status: dict, hotend: int) -> dict:
+    """device.extruder.info entry. Bambuddy names the right hotend (id 0) nozzle_2 and the
+    left one (id 1) nozzle. OrcaSlicer reads every key, so none may be missing."""
+    temps = status.get("temperatures") or {}
+    prefix = "nozzle_2" if hotend == 0 else "nozzle"
+    slot = (status.get("extruder_slots") or {}).get(str(hotend)) or {}
+    code = _slot_code(slot)
+    return {
+        "id": hotend,
+        "filam_bak": [],
+        "info": 1 << 3 | (1 << 1 if slot.get("has_filament") else 0),  # nozzle present, filament loaded
+        "temp": _packed_temp(temps.get(prefix), temps.get(prefix + "_target")),
+        "spre": code,
+        "snow": code,
+        "star": code,
+        "stat": 0,
+        "hnow": hotend,
+    }
+
+
+def _external_spool(status: dict, tray_id: int) -> dict:
+    """vir_slot entry: 255 feeds the right hotend, 254 the left one."""
+    tray = next((t for t in status.get("vt_tray") or [] if _num(t.get("id")) == tray_id), None) or {}
+    entry = {"id": str(tray_id)}
+    if tray.get("tray_type"):
+        entry.update(
+            {
+                "tray_type": tray.get("tray_type") or "",
+                "tray_color": (tray.get("tray_color") or "FFFFFFFF").upper(),
+                "tray_info_idx": tray.get("tray_info_idx") or "",
+                "tray_sub_brands": tray.get("tray_sub_brands") or "",
+                "nozzle_temp_min": str(tray.get("nozzle_temp_min") or ""),
+                "nozzle_temp_max": str(tray.get("nozzle_temp_max") or ""),
+            }
+        )
+    return entry
+
+
+def dual_fields(status: dict) -> dict:
+    """What makes OrcaSlicer show a printer with two hotends (DeviceManager parse_new_info).
+
+    OrcaSlicer reads print.device only when cfg, fun, aux and stat are all present. Empty
+    strings leave its defaults alone; aux bits 12-13 = 1 report the storage as present, so
+    LAN printing is not blocked. The extruder count is bits 0-3 of device.extruder.state.
+    Both external spools must be listed, or the AMS panel of a two-hotend printer fails.
+    """
+    active = 1 if status.get("active_extruder") == 1 else 0
+    return {
+        "cfg": "",
+        "fun": "",
+        "aux": "1000",
+        "stat": "",
+        "device": {
+            "extruder": {"state": 2 | active << 4 | active << 8, "info": [_extruder(status, 0), _extruder(status, 1)]},
+            "nozzle": {"info": [_nozzle(status, 0), _nozzle(status, 1)]},
+        },
+        "vir_slot": [_external_spool(status, 255), _external_spool(status, 254)],
+    }
+
+
+def push_status(status: dict, sequence: int, dual: bool = False) -> str:
     """A full push_status message from Bambuddy's GET /printers/{id}/status."""
     temps = status.get("temperatures") or {}
     state = status.get("state") if status.get("connected") else None
@@ -159,6 +269,8 @@ def push_status(status: dict, sequence: int) -> str:
         # The job goes to Bambuddy, which stores it and uploads it to the printer itself,
         # so OrcaSlicer's "storage present" check is about Bambuddy, not the SD card.
         "sdcard": True,
+        # Without it OrcaSlicer's Send dialog refuses: "does not support sending to printer storage".
+        "support_send_to_sd": True,
         "mc_print_error_code": "0",
         "print_error": 0,
         "mc_percent": int(_num(status.get("progress"), 0)),
@@ -183,9 +295,11 @@ def push_status(status: dict, sequence: int) -> str:
     if nozzles and nozzles[0].get("nozzle_diameter"):
         p["nozzle_diameter"] = str(nozzles[0]["nozzle_diameter"])
         p["nozzle_type"] = nozzles[0].get("nozzle_type") or "stainless_steel"
-    ams = _ams(status)
+    ams = _ams(status, dual)
     if ams:
         p["ams"] = ams
+    if dual:
+        p.update(dual_fields(status))
     return json.dumps({"print": p})
 
 
@@ -221,22 +335,33 @@ def queue_options(params) -> dict:
     }
     # Only a mapping onto real trays is worth keeping. When OrcaSlicer could not see the
     # AMS (printer offline or busy), Bambuddy maps the filaments itself at dispatch.
-    mapping = parse_ams_mapping(getattr(params, "ams_mapping", ""))
+    mapping = parse_ams_mapping(getattr(params, "ams_mapping", ""), getattr(params, "ams_mapping2", ""))
     if mapping and any(v >= 0 for v in mapping):
         opts["ams_mapping"] = mapping
         opts["use_ams"] = bool(getattr(params, "task_use_ams", True))
     return opts
 
 
-def parse_ams_mapping(raw: str) -> list[int] | None:
+EXTERNAL_SPOOLS = (254, 255)
+
+
+def parse_ams_mapping(raw: str, raw2: str = "") -> list[int] | None:
     """OrcaSlicer sends a JSON list of global tray ids per filament (-1 = unused), the same
-    format Bambuddy's queue takes."""
-    if not raw:
-        return None
+    format Bambuddy's queue takes. An external spool is -1 there too; ams_mapping2 (a list of
+    {ams_id, slot_id}) names it as ams_id 255 (right/only spool) or 254 (left spool) with
+    slot_id 0, which is the id Bambuddy's queue expects. An unmapped filament is 255/255."""
     try:
-        value = json.loads(raw)
+        value = json.loads(raw) if raw else None
     except ValueError:
         return None
-    if isinstance(value, list) and value and all(isinstance(v, int) for v in value):
-        return value
-    return None
+    if not (isinstance(value, list) and value and all(isinstance(v, int) for v in value)):
+        return None
+    try:
+        detail = json.loads(raw2) if raw2 else []
+    except ValueError:
+        detail = []
+    if isinstance(detail, list) and len(detail) == len(value):
+        for i, item in enumerate(detail):
+            if value[i] == -1 and isinstance(item, dict) and item.get("ams_id") in EXTERNAL_SPOOLS and item.get("slot_id") == 0:
+                value[i] = item["ams_id"]
+    return value

@@ -72,6 +72,43 @@ Printer agent methods implemented: `get_agent_info`, all nine `set_*_fn` callbac
 - **Send** → `SendToPrinterDialog` → `start_send_gcode_to_sdcard`. Not blocked while printing.
 - Progress: `update_fn(stage, percent, text)` with `SendingPrintJobStage` values. A failure shows
   OrcaSlicer's generic message, so the plugin also posts an error notification with the reason.
+- `SendToPrinterDialog` refuses with "The printer does not support sending to printer storage"
+  unless the push has `support_send_to_sd: true` (`SendToPrinter.cpp:1349`); every push carries
+  it since 0.4.0.
+- AMS mapping: the flat `params.ams_mapping` has -1 for an external spool
+  (`SelectMachine.cpp` `get_ams_mapping_result`); `params.ams_mapping2` names it as
+  `{ams_id: 255|254, slot_id: 0}` (unmapped: 255/255). The plugin puts 255/254 into the flat list,
+  which is what Bambuddy's queue takes (it rebuilds `ams_mapping2` itself, and uses 254 only on
+  two-nozzle printers).
+
+### Two-nozzle printers (H2D, H2D Pro, H2C)
+
+OrcaSlicer takes the extruder count only from `print.device.extruder.state` bits 0-3, and reads
+`print.device` only when `print` also has the hex strings `cfg`, `fun`, `aux` and `stat`
+(`DeviceManager.cpp` `check_enable_np`, `parse_new_info`). Without it an H2D shows one nozzle,
+and the print dialog maps filaments to any AMS regardless of side. Bambuddy (1.2.5.7 = main for
+these fields) reports `nozzle_count` in the printer list, and in the status `temperatures.nozzle`
+= left (id 1), `nozzle_2` = right (id 0), `nozzles[]`/`nozzle_rack[]` by id (`nozzle_rack` holds
+the printer's own type code such as `HH01`), `extruder_slots`, `active_extruder`,
+`ams_extruder_map`, `vt_tray` ids 254 (left) and 255 (right).
+
+`bambu_dialect.dual_fields` sends, only when `is_dual` (nozzle count 2, or two extruder slots;
+sticky per device):
+- `cfg`, `fun`, `stat` empty (OrcaSlicer keeps its defaults), `aux` `"1000"` (bits 12-13 = 1:
+  storage present, otherwise LAN printing is blocked). `fun` bit 60 (H2C rack) stays 0.
+- `device.extruder`: `state` = 2 | active << 4 | active << 8; `info` in id order 0, 1, each with
+  every key the parser reads without checking (`id`, `filam_bak`, `info`, `temp`, `spre`,
+  `snow`, `star`, `stat`, `hnow`): a missing key is undefined behaviour, not an exception.
+  `temp` = target << 16 | current; `snow` = ams_id << 8 | slot_id, 0xFFFF for none.
+- `device.nozzle.info`: id, `diameter` as a number (a string throws), `type`. A plain material
+  name means Standard flow, a 4-character code carries the flow (`H` = high flow); `N/A` would
+  mean unknown flow, which blocks printing, so it is never sent.
+- `vir_slot` with both spools, 255 then 254: the two-nozzle AMS panel asserts or indexes out of
+  range without them (`AMSControl.cpp`).
+- `ams[].info`: type in bits 0-3, nozzle in bits 8-11 (never 0xE, which hides the unit).
+
+Single-nozzle printers get the same push as 0.3.1 plus `support_send_to_sd` (checked against the
+0.3.1 code). The temperature and AMS controls of the Device tab still answer "not supported".
 
 ### Threading and the permission (audit) model
 
@@ -354,8 +391,6 @@ Not verified:
   simulated responses (the demo scheduler does not dispatch queue items).
 - Cloudflare Access against a real Cloudflare tunnel (only simulated responses).
 - Windows and macOS; HTTPS with the system CA fallback on a real server.
-- The Send menu entry (`SendToPrinterDialog`): the popup menu could not be opened through XTest;
-  it shares `agent_job` with the Print path.
 - Print all plates from OrcaSlicer's dialog.
 - "Open in Bambuddy" links in a real browser. In the headless test a stand-in `xdg-open` on `PATH`
   logged the launches. Beta: `['xdg-open', 'http://localhost:18001/']` is part of the startup

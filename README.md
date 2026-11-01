@@ -221,7 +221,9 @@ OrcaSlicer cannot see its AMS, so Bambuddy maps the filaments when it starts the
 ## Watch your printers
 
 - **Device tab**: the selected Bambuddy printer, live (state, progress, layer, remaining time,
-  temperatures, AMS), refreshed every 3 seconds.
+  temperatures, AMS), refreshed every 3 seconds. Two-nozzle printers (H2D, H2D Pro, H2C) show
+  both nozzles, the active one, and which AMS feeds which nozzle, and OrcaSlicer's print dialog
+  maps filaments per nozzle.
 - **Bambuddy tab**: all printers. Click a printer for a camera snapshot (**Refresh camera** for a
   new one). The tab polls only while it is visible.
 - **Notifications** after a send: *queued* (or *waiting for a manual start*), *started printing*,
@@ -305,8 +307,7 @@ saved API key**.
 - **Job tracking** runs only while OrcaSlicer is open, and for up to 24 hours per job.
 - **"Print all plates"** from OrcaSlicer's dialog should queue one item per plate, but it was not
   tested.
-- **The Send menu entry** (send to printer storage) shares its code with the Print button and is
-  covered by automated tests, but was not driven through OrcaSlicer's dialog during testing.
+- **H2C nozzle rack**: an H2C shows as a printer with two nozzles; the rack is not shown.
 
 ## Phase 2 roadmap
 
