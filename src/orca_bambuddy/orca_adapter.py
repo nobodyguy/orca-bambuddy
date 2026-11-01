@@ -2,8 +2,8 @@
 
 Verified against OrcaSlicer v2.5.0-alpha (git 3880f2c, 2026-10-16): src/slic3r/plugin/*,
 the printerAgent and pages capability bindings, and plugin/host/PluginHostUi.cpp; the
-permission model also against v2.5.0-beta. The plugin API is alpha; keep calls to it in
-this file.
+permission model also against v2.5.0-beta. v2.5.0-rc (af2ffb8c) has the beta's plugin
+sources unchanged. The plugin API is alpha; keep calls to it in this file.
 """
 
 from __future__ import annotations

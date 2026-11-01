@@ -6,6 +6,7 @@
 |---|---|---|
 | OrcaSlicer | 2.5.0-alpha, git `3880f2c` (2026-10-16, "Bump version to 2.5.0-alpha") | source in `/home/devel/repos/OrcaSlicer` and the release AppImage `OrcaSlicer_Linux_AppImage_Ubuntu2404_V2.5.0-alpha` (embedded CPython 3.12.13, OpenSSL 1.1.1w) |
 | OrcaSlicer | 2.5.0-beta, tag `v2.5.0-beta` (2026-10-27, build `345efec6`) | the plugin audit sources at the tag (`PluginAuditManager.cpp`, `PythonPluginBridge.cpp`); see "Audit changes in 2.5.0-beta" |
+| OrcaSlicer | 2.5.0-rc, tag `v2.5.0-rc` (2026-11-01, build `af2ffb8c`) | the diff from the beta tag and the release AppImage `OrcaSlicer_Linux_AppImage_Ubuntu2404_V2.5.0-rc`; see "Changes in 2.5.0-rc" |
 | Bambuddy (primary) | 1.2.5.7, tag `v1.2.5.7` = `188df76` | source at the tag; Docker image `ghcr.io/maziggy/bambuddy:1.2.5.7` |
 | Bambuddy (extra) | 1.3.0b1 | a `demo.bambuddy.cool` session with simulated printers |
 
@@ -228,6 +229,29 @@ What the plugin does (`orca_adapter.declare_permissions`):
   `zipfile` imports `encodings.cp437`. `orca_adapter` imports these while the plugin loads, where
   compiling raises no prompt.
 
+### Changes in 2.5.0-rc
+
+`git diff v2.5.0-beta v2.5.0-rc` leaves `src/slic3r/plugin` (loader, bridge, audit manager,
+printer-agent and pages bindings) and the bundled Python unchanged, so the permission model and the
+load-time request work as on the beta. Changes the agent meets:
+
+- The print and send dialogs name a plugin agent's printer `<dev_name> (<dev_ip>)` instead of
+  `<dev_name>(LAN)` when the two differ (`get_shown_printer_name`, `SelectMachine.cpp`). The
+  plugin's `dev_ip` is the Bambuddy host, so the dialog shows for example
+  `X1C Office (bambuddy.example.com)`. The send dialog no longer folds printers that share a name.
+- The last selected printer is remembered per agent (`OrcaSlicer.conf` section
+  `last_selected_machine`, key `bambuddy`), and kept when OrcaSlicer swaps agents. Opening the
+  Device tab reconnects it (`DeviceManager::load_last_machine`). At startup, `select_machine`
+  still selects a plugin agent's device only when it has exactly one.
+- `SelectMachineDialog` calls `fetch_filament_info` before mapping when the agent reports
+  `FilamentSyncMode::pull`. The plugin keeps the default (`none`): the AMS comes with every
+  status push.
+- `AgentInfo.native_device_tab` (default true) exists on the C++ side only; the Python
+  `AgentInfo` binding does not expose it, and the plugin wants the native Device tab anyway.
+- AMS units may carry a `display_name` in the push. Not used.
+- The agent is registered after the startup switch, and OrcaSlicer switches again afterwards, as
+  on the beta.
+
 ### Plugin image
 
 The Plugins dialog's thumbnail comes only from an OrcaCloud listing image
@@ -447,3 +471,18 @@ and the printer popup render once a window manager runs on the test display (`xf
 
 Not verified: a real H2D, H2D Pro or H2C (the field mapping comes from Bambuddy's and
 OrcaSlicer's sources); the print-host case in the GUI (unit-tested).
+
+2.5.0-rc (2026-11-01), plugin 0.4.0, no code change needed. The release AppImage on Xvfb with a
+fresh `--datadir` (plugin installed locally, permissions not yet granted), against a scripted
+Bambuddy 1.2.5.7 with an X1C and an H2D.
+
+| Check | 2.5.0-rc |
+|---|---|
+| One load prompt: both folder trees, `http://127.0.0.1`, the `xdg-open` command, threads; plugin loads | ✓ |
+| Agent unregistered at the first switch, then registered and switched to | ✓ |
+| Device tab: both printers listed; H2D with both nozzles and AMS sides; X1C single-nozzle view | ✓ |
+| Print plate → dialog (`X1C Office (127.0.0.1:18001)`) → chooser → Print now → queue item with `ams_mapping` [0] and the dialog options | ✓ |
+| Send → send dialog → chooser → Add to queue → staged item | ✓ |
+| No audit denial during the session | ✓ |
+| Restart: no prompt; opening the Device tab reconnects the remembered X1C | ✓ |
+| Bambuddy tab status table | ✓ |

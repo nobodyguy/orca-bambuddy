@@ -59,7 +59,7 @@ printer per send.
 
 ## Requirements
 
-- OrcaSlicer **2.5.0-alpha** or **2.5.0-beta** (Windows, macOS, Linux).
+- OrcaSlicer **2.5.0-alpha**, **2.5.0-beta** or **2.5.0-rc** (Windows, macOS, Linux).
 - Bambuddy **1.2.5.7** (tested; 1.3.0b1 was tested too).
 - A Bambuddy API key. Nothing else to install: the plugin uses only Python's standard library.
 
@@ -81,13 +81,14 @@ time it starts, and a notification says so. Deactivate or remove the old one aft
    remembers the answers until you install a new version.
    - **2.5.0-alpha** asks once: *Plugin "orca-bambuddy" is requesting permission to create a
      thread.*
-   - **2.5.0-beta** asks once, while the plugin loads, for: creating threads; reading OrcaSlicer's
-     temp folder (`<temp>/orcaslicer_<uid>/orcaslicer_model`, where OrcaSlicer puts the sliced file
-     for Print/Send) and your export folder (default `~/Downloads`); network access to your
-     Bambuddy host; and running `xdg-open <your Bambuddy URL>` (`open` on macOS), which the
-     **Open Bambuddy** links use. Answering No stops the plugin from loading. The host is known only after you
-     enter the URL, so **after setting or changing the Bambuddy URL, restart OrcaSlicer** and answer
-     Yes again. Until then the plugin says so instead of connecting.
+   - **2.5.0-beta** and **2.5.0-rc** ask once, while the plugin loads, for: creating threads;
+     reading OrcaSlicer's temp folder (`<temp>/orcaslicer_<uid>/orcaslicer_model`, where
+     OrcaSlicer puts the sliced file for Print/Send) and your export folder (default
+     `~/Downloads`); network access to your Bambuddy host; and running
+     `xdg-open <your Bambuddy URL>` (`open` on macOS), which the **Open Bambuddy** links use.
+     Answering No stops the plugin from loading. The host is known only after you enter the URL,
+     so **after setting or changing the Bambuddy URL, restart OrcaSlicer** and answer Yes again.
+     Until then the plugin says so instead of connecting.
    - **Open Bambuddy** and *Open in Bambuddy* (in notifications) always open the Bambuddy
      dashboard.
 
@@ -201,7 +202,9 @@ This uses OrcaSlicer's experimental printer agents. Set it up once:
 3. Restart OrcaSlicer, or select another preset and then this one again.
 4. In the **Device** tab, open the printer list: your Bambuddy printers are listed. Select one.
    The first time, OrcaSlicer asks for an **access code**. The plugin does not use it, so type
-   anything, for example `bambuddy`. OrcaSlicer remembers it for that printer.
+   anything, for example `bambuddy`. OrcaSlicer remembers it for that printer. OrcaSlicer
+   2.5.0-rc also remembers the printer you selected, and connects to it again when you open the
+   Device tab.
 
 **Why your printers are listed again.** OrcaSlicer keeps a separate printer list, with its own
 access codes, for each printer agent. While a Bambuddy preset is selected, the Device tab shows
@@ -215,7 +218,8 @@ when that happened; select another printer preset and then the Bambuddy one agai
 
 Then:
 
-1. Slice, and press **Print plate**. OrcaSlicer's print dialog shows the selected Bambuddy printer,
+1. Slice, and press **Print plate**. OrcaSlicer's print dialog shows the selected Bambuddy printer
+   (2.5.0-rc adds your Bambuddy address to each name, for example *X1C (bambuddy.example.com)*),
    maps your filaments to its AMS slots, and offers its usual options (timelapse, bed levelling,
    flow calibration). If the plate was sliced for a different model, OrcaSlicer warns you, and the
    plugin also refuses a model Bambuddy cannot run.
@@ -280,12 +284,12 @@ If you prefer not to enable the experimental printer agents:
 | *printer* is offline | the job waits in Bambuddy's queue until the printer is back |
 | This plate was sliced for X1C, but *printer* is a A1 Mini | select the matching printer preset and slice again |
 | The plugin is not allowed to start its background threads | you answered No to the thread prompt: reinstall the plugin, or restart and answer Yes |
-| OrcaSlicer has not allowed the plugin to connect to *host* yet / did not allow the plugin to connect | OrcaSlicer 2.5.0-beta: restart OrcaSlicer after setting the URL, and answer Yes to the network prompt |
+| OrcaSlicer has not allowed the plugin to connect to *host* yet / did not allow the plugin to connect | OrcaSlicer 2.5.0-beta and later: restart OrcaSlicer after setting the URL, and answer Yes to the network prompt |
 | Device tab says "Connecting..." or "Failed to connect to the printer" | the plugin got no status from Bambuddy. A notification *no status of printer for 30 s* gives the reason; check that Bambuddy is reachable |
 | This printer preset has a print host set … | clear the print host of the printer preset, then select the printer from the Bambuddy list in the Device tab |
 | OrcaSlicer selected this printer preset before the Bambuddy printer agent was ready … | OrcaSlicer 2.5.0-alpha: select another printer preset and then the Bambuddy one again |
 | Bambuddy no longer has this printer | the printer was deleted or deactivated in Bambuddy; select another one |
-| The plugin may not read *file* … audit permission required | OrcaSlicer 2.5.0-beta refused a file read. For Print/Send, update the plugin and restart. For a file picked in the Bambuddy tab outside the export folder, answer Yes to OrcaSlicer's prompt and send again |
+| The plugin may not read *file* … audit permission required | OrcaSlicer 2.5.0-beta or later refused a file read. For Print/Send, update the plugin and restart. For a file picked in the Bambuddy tab outside the export folder, answer Yes to OrcaSlicer's prompt and send again |
 
 The plugin logs to OrcaSlicer's Python log, `<data dir>/log/python_*.log`, with lines starting
 with `[bambuddy]`. Secrets are never logged or shown in notifications.
