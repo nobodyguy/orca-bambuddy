@@ -136,7 +136,7 @@ def apply_settings_update(cfg: dict, update: dict) -> dict:
 
 def export_folder(cfg: dict) -> str:
     folder = cfg.get("export_folder") or os.path.join(os.path.expanduser("~"), "Downloads")
-    return os.path.expanduser(folder)
+    return os.path.normpath(os.path.expanduser(folder))
 
 
 def orca_temp_root() -> str:
@@ -154,9 +154,23 @@ def orca_temp_root() -> str:
     return base if os.name == "nt" else os.path.join(base, f"orcaslicer_{os.getuid()}")
 
 
+def native_path(path: str) -> str:
+    """``path`` with the platform's own separators.
+
+    On Windows OrcaSlicer hands the agent paths like
+    ``C:\\Users\\me\\AppData\\Local\\Temp/orcaslicer_model/<date>/<time>#<pid>#<id>/Metadata\\.1.0.3mf``
+    (``wxFileName::GetTempDir()`` joined with ``/`` and then ``\\``). The audit hook matches the
+    path of an ``open`` event against the load-time ``fs_read`` grant as a string, so the mixed
+    separators miss the ``Temp\\orcaslicer_model\\*`` grant: the read is blocked and a runtime
+    permission prompt is posted to the UI thread while the print dialog is open, which can freeze
+    OrcaSlicer. Normalising the path before any file access keeps it inside the grant.
+    """
+    return os.path.normpath(path) if path else path
+
+
 def orca_model_temp_dir() -> str:
     """Where OrcaSlicer writes the sliced .3mf it hands to the printer agent (Model::get_backup_path)."""
-    return os.path.join(orca_temp_root(), "orcaslicer_model")
+    return os.path.normpath(os.path.join(orca_temp_root(), "orcaslicer_model"))
 
 
 def network_origin(url: str) -> str:
@@ -1018,7 +1032,7 @@ class Service:
         name = printer.get("name") or dev
         plate = int(getattr(params, "plate_index", 0) or 0)
         job = SendJob(
-            path=params.filename,
+            path=native_path(params.filename),
             action=action,
             printer_id=pid,
             label=name,
