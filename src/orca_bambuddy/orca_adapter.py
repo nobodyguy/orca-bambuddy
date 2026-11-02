@@ -30,7 +30,7 @@ from . import service as svc
 from . import ui
 from .camera_relay import RELAY_ORIGIN
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 AGENT_CAPABILITY = "Bambuddy printer agent"
 PAGE_CAPABILITY = "Bambuddy"
 AGENT_NOT_STARTED = (
