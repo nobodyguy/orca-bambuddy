@@ -124,7 +124,11 @@ sticky per device):
 - `ams[].info`: type in bits 0-3, nozzle in bits 8-11 (never 0xE, which hides the unit).
 
 Single-nozzle printers get the same push as 0.3.1 plus `support_send_to_sd` (checked against the
-0.3.1 code). The temperature and AMS controls of the Device tab still answer "not supported".
+0.3.1 code) and `hw_switch_state`. OrcaSlicer marks filament in the extruder only from that field
+(`DeviceManager.cpp`; `ExtderSystemParser::ParseV1_0` takes the slot from `ams.tray_now` but not
+the sensor). Without it `StatusPanel::update_ams` draws the AMS path as unloaded, so the slot in
+use is not shown. Bambuddy does not pass the sensor on; the plugin sends 1 unless `tray_now` is
+255 (nothing loaded). The temperature and AMS controls of the Device tab still answer "not supported".
 
 ### Device tab camera
 
@@ -569,3 +573,11 @@ printer camera that is slow to deliver its first frame (FFmpeg's 5 s `rw_timeout
 longer than the token's 60 minutes (Bambuddy checks the token only when the stream opens),
 switching between printers in the GUI (unit-tested: one URL per printer), Cloudflare Access in
 front of the stream, Windows and macOS.
+
+Slot in use (2026-11-02), reported by the user on a real P1S through Bambuddy (white PETG in A2
+printing, no slot marked in the Device tab). Fixed by `hw_switch_state`. Checked in the 2.5.0-rc
+AppImage against the scripted Bambuddy (one AMS, four PETG/PETG-CF slots): with `tray_now` 2 the
+path from A3 through the hub to the extruder is drawn in the filament's colour (black); with
+`tray_now` 1 (white PETG) it is drawn white, which is hard to see on the light theme. On the
+user's real P1S (through Bambuddy 1.2.5.7, printing from A2): the white path from A2 through the
+hub to the extruder, and the extruder shown as loaded.

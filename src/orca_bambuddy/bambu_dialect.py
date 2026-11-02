@@ -295,6 +295,12 @@ def push_status(status: dict, sequence: int, dual: bool = False) -> str:
     if nozzles and nozzles[0].get("nozzle_diameter"):
         p["nozzle_diameter"] = str(nozzles[0]["nozzle_diameter"])
         p["nozzle_type"] = nozzles[0].get("nozzle_type") or "stainless_steel"
+    if not dual:
+        # The extruder's filament sensor. Without it OrcaSlicer draws the AMS path as unloaded
+        # and marks no slot (StatusPanel update_ams, DeviceManager.cpp hw_switch_state; two
+        # hotends report it in device.extruder instead). Bambuddy does not pass the sensor on,
+        # but tray_now is 255 exactly when nothing is loaded.
+        p["hw_switch_state"] = 0 if _num(status.get("tray_now"), 255) == 255 else 1
     ams = _ams(status, dual)
     if ams:
         p["ams"] = ams

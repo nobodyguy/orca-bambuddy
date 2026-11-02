@@ -100,11 +100,12 @@ class DialectTest(unittest.TestCase):
         self.assertTrue(p["sdcard"])
         ams = p["ams"]
         self.assertEqual((ams["ams_exist_bits"], ams["tray_exist_bits"], ams["tray_now"]), ("1", "5", "2"))
+        self.assertEqual(p["hw_switch_state"], 1)  # tray 2 loaded: OrcaSlicer draws the path to the extruder
         trays = ams["ams"][0]["tray"]
         self.assertEqual(trays[0]["tray_color"], "FF0000FF")
         self.assertEqual(trays[1], {"id": "1"})  # empty slot
 
-    def test_single_hotend_message_is_unchanged(self):
+    def test_single_hotend_message(self):
         st = {"connected": True, "state": "IDLE", "temperatures": {"nozzle": 25, "bed": 22},
               "nozzles": [{"nozzle_type": "stainless_steel", "nozzle_diameter": "0.4"}, {"nozzle_type": "", "nozzle_diameter": ""}],
               "ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA", "tray_color": "ffffffff"}]}], "tray_now": 255}
@@ -114,7 +115,7 @@ class DialectTest(unittest.TestCase):
             "sdcard": True, "support_send_to_sd": True, "mc_print_error_code": "0", "print_error": 0, "mc_percent": 0,
             "mc_remaining_time": 0, "layer_num": 0, "total_layer_num": 0, "subtask_name": "", "gcode_file": "",
             "stg_cur": -1, "wifi_signal": "", "nozzle_temper": 25.0, "bed_temper": 22.0,
-            "nozzle_diameter": "0.4", "nozzle_type": "stainless_steel",
+            "nozzle_diameter": "0.4", "nozzle_type": "stainless_steel", "hw_switch_state": 0,
             "ams": {"ams": [{"id": "0", "humidity": "", "temp": "", "tray": [
                 {"id": "0", "tray_type": "PLA", "tray_color": "FFFFFFFF", "tray_info_idx": "", "tray_sub_brands": "",
                  "tray_id_name": "", "remain": 0, "nozzle_temp_min": "", "nozzle_temp_max": ""}]}],
@@ -156,6 +157,7 @@ class DialectTest(unittest.TestCase):
 
     def test_two_hotend_message_without_data(self):
         p = json.loads(bd.push_status({"connected": False}, 1, dual=True))["print"]
+        self.assertNotIn("hw_switch_state", p)  # device.extruder carries it
         self.assertEqual(p["gcode_state"], "OFFLINE")
         self.assertEqual([e["snow"] for e in p["device"]["extruder"]["info"]], [0xFFFF, 0xFFFF])
         self.assertEqual(p["device"]["nozzle"]["info"][0], {"id": 0, "diameter": 0.0, "type": ""})
@@ -164,6 +166,11 @@ class DialectTest(unittest.TestCase):
     def test_offline_printer(self):
         p = json.loads(bd.push_status({"connected": False, "state": "IDLE"}, 1))["print"]
         self.assertEqual(p["gcode_state"], "OFFLINE")
+        self.assertEqual(p["hw_switch_state"], 0)
+
+    def test_external_spool_counts_as_loaded(self):
+        p = json.loads(bd.push_status({"connected": True, "state": "RUNNING", "tray_now": 254}, 1))["print"]
+        self.assertEqual(p["hw_switch_state"], 1)
 
     def test_command_of(self):
         self.assertEqual(bd.command_of('{"info": {"command": "get_version"}}'), ("info", "get_version"))

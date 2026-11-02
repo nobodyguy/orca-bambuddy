@@ -239,9 +239,9 @@ OrcaSlicer cannot see its AMS, so Bambuddy maps the filaments when it starts the
 ## Watch your printers
 
 - **Device tab**: the selected Bambuddy printer, live (state, progress, layer, remaining time,
-  temperatures, AMS), refreshed every 3 seconds. Two-nozzle printers (H2D, H2D Pro, H2C) show
-  both nozzles, the active one, and which AMS feeds which nozzle, and OrcaSlicer's print dialog
-  maps filaments per nozzle. When Bambuddy does not answer, the tab keeps the last known status
+  temperatures, AMS and the slot in use), refreshed every 3 seconds. Two-nozzle printers (H2D,
+  H2D Pro, H2C) show both nozzles, the active one, and which AMS feeds which nozzle, and
+  OrcaSlicer's print dialog maps filaments per nozzle. When Bambuddy does not answer, the tab keeps the last known status
   for 30 seconds, then shows the printer offline and the plugin tells you why; it recovers by
   itself.
 - **Camera in the Device tab**: press play under the camera view. The picture is Bambuddy's live
