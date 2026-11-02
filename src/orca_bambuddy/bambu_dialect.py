@@ -301,6 +301,11 @@ def push_status(status: dict, sequence: int, dual: bool = False) -> str:
         # hotends report it in device.extruder instead). Bambuddy does not pass the sensor on,
         # but tray_now is 255 exactly when nothing is loaded.
         p["hw_switch_state"] = 0 if _num(status.get("tray_now"), 255) == 255 else 1
+        # One external spool, which OrcaSlicer reads from print.vt_tray (DeviceManager.cpp,
+        # parse_vt_tray). Bambuddy lists it as id 254, like the printer reports it.
+        ids = [t.get("id") for t in status.get("vt_tray") or []]
+        if ids:
+            p["vt_tray"] = _external_spool(status, 254 if 254 in ids else ids[0])
     ams = _ams(status, dual)
     if ams:
         p["ams"] = ams

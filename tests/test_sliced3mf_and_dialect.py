@@ -171,6 +171,17 @@ class DialectTest(unittest.TestCase):
     def test_external_spool_counts_as_loaded(self):
         p = json.loads(bd.push_status({"connected": True, "state": "RUNNING", "tray_now": 254}, 1))["print"]
         self.assertEqual(p["hw_switch_state"], 1)
+        self.assertNotIn("vt_tray", p)  # Bambuddy listed none
+
+    def test_single_hotend_external_spool(self):
+        st = {"connected": True, "state": "IDLE", "vt_tray": [
+            {"id": 254, "tray_type": "PLA", "tray_color": "8e9089ff", "tray_info_idx": "GFL99", "nozzle_temp_min": 190, "nozzle_temp_max": 230}]}
+        p = json.loads(bd.push_status(st, 1))["print"]
+        self.assertEqual(p["vt_tray"], {"id": "254", "tray_type": "PLA", "tray_color": "8E9089FF", "tray_info_idx": "GFL99",
+                                        "tray_sub_brands": "", "nozzle_temp_min": "190", "nozzle_temp_max": "230"})
+        self.assertNotIn("vir_slot", p)
+        p = json.loads(bd.push_status({"connected": True, "vt_tray": [{"id": 254, "tray_type": ""}]}, 1))["print"]
+        self.assertEqual(p["vt_tray"], {"id": "254"})  # empty holder
 
     def test_command_of(self):
         self.assertEqual(bd.command_of('{"info": {"command": "get_version"}}'), ("info", "get_version"))

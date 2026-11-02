@@ -128,7 +128,10 @@ Single-nozzle printers get the same push as 0.3.1 plus `support_send_to_sd` (che
 (`DeviceManager.cpp`; `ExtderSystemParser::ParseV1_0` takes the slot from `ams.tray_now` but not
 the sensor). Without it `StatusPanel::update_ams` draws the AMS path as unloaded, so the slot in
 use is not shown. Bambuddy does not pass the sensor on; the plugin sends 1 unless `tray_now` is
-255 (nothing loaded). The temperature and AMS controls of the Device tab still answer "not supported".
+255 (nothing loaded). The external spool of a single-nozzle printer is one `vt_tray` object
+(`MachineObject::parse_vt_tray`; two hotends use the `vir_slot` list). Bambuddy keeps it as
+`vt_tray` entry id 254, which the plugin sends with the fields of a `vir_slot` entry; without it
+the Ext slot shows "?". The temperature and AMS controls of the Device tab still answer "not supported".
 
 ### Device tab camera
 
@@ -581,3 +584,8 @@ path from A3 through the hub to the extruder is drawn in the filament's colour (
 `tray_now` 1 (white PETG) it is drawn white, which is hard to see on the light theme. On the
 user's real P1S (through Bambuddy 1.2.5.7, printing from A2): the white path from A2 through the
 hub to the extruder, and the extruder shown as loaded.
+
+External spool (2026-11-02), reported by the user on the same P1S (grey PLA on the holder, Ext
+shown as "?"). Fixed by `vt_tray`. Checked in the 2.5.0-rc AppImage against the scripted Bambuddy
+(grey PLA, id 254): Ext shows PLA in grey while A3 feeds; with `tray_now` 254 the path runs from
+Ext to the extruder in grey. On the user's P1S afterwards: Ext shows the grey PLA.
