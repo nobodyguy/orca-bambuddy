@@ -234,6 +234,45 @@ class ClientTest(unittest.TestCase):
         c.camera_snapshot(1)
         self.assertTrue(self.server.requests[-1]["path"].endswith("token=t2"))
 
+    MJPEG = "multipart/x-mixed-replace; boundary=frame"
+
+    def test_camera_stream_sends_token_fps_and_proxy_headers(self):
+        self.server.route("POST", "/api/v1/printers/camera/stream-token", body={"token": "t1"})
+        self.server.route("GET", "/api/v1/printers/1/camera/stream", body=b"--frame\r\n", headers={"Content-Type": self.MJPEG})
+        c = self.client(cf_client_id=CF_ID, cf_client_secret=CF_SECRET, extra_headers=(("X-Proxy", "p"),))
+        with c.open_camera_stream(1, fps=5) as resp:
+            self.assertEqual(resp.read(), b"--frame\r\n")
+        req = self.server.requests[-1]
+        self.assertEqual(req["path"], "/api/v1/printers/1/camera/stream?token=t1&fps=5")
+        self.assertEqual((req["headers"]["CF-Access-Client-Secret"], req["headers"]["X-Proxy"]), (CF_SECRET, "p"))
+        self.assertEqual(c._stream_token(), "t1")  # one token for stream and snapshots
+
+    def test_camera_stream_retries_once_with_a_new_token(self):
+        tokens = iter(["old", "new", "newer"])
+        self.server.routes[("POST", "/api/v1/printers/camera/stream-token")] = lambda req: (200, {}, {"token": next(tokens)})
+        self.server.routes[("GET", "/api/v1/printers/1/camera/stream")] = lambda req: (
+            (200, {"Content-Type": self.MJPEG}, b"x") if "token=new&" in req["path"] else (401, {}, {"detail": "Valid camera stream token required"})
+        )
+        self.client().open_camera_stream(1).close()
+        streams = [r["path"] for r in self.server.requests if "/stream?" in r["path"]]
+        self.assertEqual(len(streams), 2)
+        self.server.route("POST", "/api/v1/printers/camera/stream-token", body={"token": "t"})
+        self.server.route("GET", "/api/v1/printers/1/camera/stream", status=401, body={"detail": "Valid camera stream token required"})
+        with self.assertRaises(BambuddyError) as e:
+            self.client().open_camera_stream(1)
+        self.assertEqual(e.exception.status, 401)
+
+    def test_camera_stream_errors(self):
+        self.server.route("POST", "/api/v1/printers/camera/stream-token", body={"token": "t1"})
+        self.server.route("GET", "/api/v1/printers/1/camera/stream", status=503, body={"detail": "Camera not reachable"})
+        with self.assertRaises(BambuddyError) as e:
+            self.client().open_camera_stream(1)
+        self.assertEqual((e.exception.kind, e.exception.message), ("server", "Camera not reachable"))
+        self.server.route("GET", "/api/v1/printers/1/camera/stream", body="<html>login</html>", headers={"Content-Type": "text/html"})
+        with self.assertRaises(BambuddyError) as e:
+            self.client().open_camera_stream(1)
+        self.assertIn("text/html", e.exception.message)
+
     # -- Test connection report --
 
     def test_connection_report_all_good(self):

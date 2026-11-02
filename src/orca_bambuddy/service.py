@@ -32,6 +32,7 @@ from .bambuddy import (
     normalize_base_url,
     parse_extra_headers,
 )
+from .camera_relay import CameraRelay
 
 log = logging.getLogger("orca_bambuddy")
 
@@ -69,6 +70,7 @@ DEVICE_STATUS_TIMEOUT_S = 8
 # While Bambuddy does not answer, the Device tab keeps the last known status this long,
 # then shows the printer offline; the user is told once.
 STATUS_STALE_S = 30
+CAMERA_FPS = 10  # Bambuddy's default for /camera/stream
 NO_THREADS = (
     "The plugin is not allowed to start its background threads. Restart OrcaSlicer, open the "
     "Bambuddy tab and answer Yes to the permission prompt."
@@ -365,6 +367,9 @@ class Service:
         self._tracked: dict[int, TrackedJob] = {}
         self._sending = False
         self.agent = AgentState()
+        self._relay: CameraRelay | None = None
+        self._relay_failed = False
+        self._camera_failure_reported = False
 
     # ---- lifecycle ------------------------------------------------------------
 
@@ -983,6 +988,63 @@ class Service:
             return bd.OK
         # Pause/resume/stop, temperatures, AMS and camera commands are phase 2.
         return bd.ERR_NOT_SUPPORTED
+
+    # ---- Device tab camera ------------------------------------------------------
+
+    def camera_url(self) -> str:
+        """The camera URL of the connected printer, "" for none. OrcaSlicer reads it on the UI
+        thread at every Device tab update, so it comes from memory; it stays the same for a
+        printer, because a changed URL stops a playing stream (MediaPlayCtrl::SetMachineObject).
+        Empty until the relay is listening, which is the next update after the first call."""
+        printer = bd.find_printer(self._printers, self.agent.connected or "")
+        if printer is None or self.client is None or not self._start_relay() or not self._relay.ready:
+            return ""
+        return self._relay.url(printer["id"])
+
+    def _start_relay(self) -> bool:
+        """Start the camera relay's thread, on the first camera_url() call."""
+        if self._relay is not None:
+            return True
+        if self._relay_failed or not self.started or self.stopped:
+            return False
+        # Also keeps the permission prompt's nested event loop from starting a second one.
+        self._relay_failed = True
+        relay = CameraRelay(self.open_camera_stream, self._stop, self._camera_failed, self._camera_opened)
+        try:
+            threading.Thread(target=self._run_relay, args=(relay,), name="bambuddy-camera", daemon=True).start()
+        except (PermissionError, RuntimeError) as e:
+            log.warning("The camera relay could not start: %s", e)
+            return False
+        self._relay, self._relay_failed = relay, False
+        return True
+
+    def _run_relay(self, relay: CameraRelay) -> None:
+        # The socket is made here, not on the UI thread: OrcaSlicer 2.5.0-alpha audits only the
+        # UI thread and would ask about it there, with no target to show; 2.5.0-beta and
+        # later allow it on this thread through the load-time grant of 127.0.0.1.
+        try:
+            relay.bind()
+        except OSError as e:  # PermissionError: OrcaSlicer's audit
+            log.warning("The camera relay could not start: %s", e)
+            return
+        relay.serve()
+
+    def open_camera_stream(self, printer_id: int):
+        """The relay's upstream, on a relay thread."""
+        client = self.client
+        if client is None:
+            raise BambuddyError("bad_url", self._no_client("Bambuddy URL not set."))
+        return client.open_camera_stream(printer_id, CAMERA_FPS)
+
+    def _camera_failed(self, reason: str) -> None:
+        # OrcaSlicer retries a failed stream by itself; one notification per failure streak.
+        log.warning("Camera stream failed: %s", reason)
+        if not self._camera_failure_reported:
+            self._camera_failure_reported = True
+            self.host.notify("warning", f"Bambuddy camera: {reason}")
+
+    def _camera_opened(self) -> None:
+        self._camera_failure_reported = False
 
     def printer_for_dev(self, dev: str) -> dict | None:
         """The Bambuddy printer of a device id, fetching the list if needed. Raises

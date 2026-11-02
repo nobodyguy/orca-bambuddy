@@ -253,6 +253,34 @@ class AgentTest(ServiceTestBase):
         self.service.agent_push_status()
         self.assertEqual(self.pushes()[-1]["gcode_state"], "OFFLINE")
 
+    def test_camera_url_of_the_connected_printer(self):
+        self.assertEqual(self.service.camera_url(), "")  # nothing connected
+        self.service.agent_announce()
+        self.service.agent.connected = "bambuddy-00M02"
+        for _ in range(50):  # the relay binds on its own thread
+            url = self.service.camera_url()
+            if url:
+                break
+            __import__("time").sleep(0.05)
+        self.assertRegex(url, r"^http://127\.0\.0\.1:\d+/[\w-]+/2$")
+        self.assertEqual(self.service.camera_url(), url)  # a changed URL would stop playback
+        self.assertIn("bambuddy-camera", [t.name for t in __import__("threading").enumerate()])
+        self.service.configure({"base_url": ""})
+        self.assertEqual(self.service.camera_url(), "")
+
+    def test_camera_failures_notify_once_per_streak(self):
+        self.service._camera_failed("Camera not reachable")
+        self.service._camera_failed("Camera not reachable")
+        self.assertEqual(self.host.notes, [("warning", "Bambuddy camera: Camera not reachable")])
+        self.service._camera_opened()
+        self.service._camera_failed("Camera not reachable")
+        self.assertEqual(len(self.host.notes), 2)
+
+    def test_camera_stream_without_a_client(self):
+        self.service.configure({"base_url": ""})
+        with self.assertRaises(svc.BambuddyError):
+            self.service.open_camera_stream(1)
+
     def test_device_thread_connects(self):
         self.assertIn("bambuddy-device", [t.name for t in __import__("threading").enumerate()])
         self.service.agent_announce()

@@ -37,7 +37,7 @@ Printer agent methods implemented: `get_agent_info`, all nine `set_*_fn` callbac
 `send_message`, `send_message_to_printer`, `start_send_gcode_to_sdcard` (including OrcaSlicer's
 `verify_job` probe), `start_local_print`, `start_local_print_with_record`, `start_print`,
 `start_sdcard_print` (not supported), `bind_detect`, `check_cert`, `ping_bind`, `bind`, `unbind`,
-`request_bind_ticket`.
+`request_bind_ticket`, `get_camera_stream_mode`, `get_camera_url` (see "Device tab camera").
 
 ### How OrcaSlicer drives an agent (read from the source, confirmed in the GUI)
 
@@ -125,6 +125,53 @@ sticky per device):
 
 Single-nozzle printers get the same push as 0.3.1 plus `support_send_to_sd` (checked against the
 0.3.1 code). The temperature and AMS controls of the Device tab still answer "not supported".
+
+### Device tab camera
+
+Read from the sources of all three tags; the camera code is the same in the alpha, beta and rc
+(`MediaPlayCtrl.cpp` differs only in includes, `WebMediaController.cpp` and `wxMediaCtrl3.cpp`
+not at all):
+
+- The Python binding (`PrinterAgentPluginCapability.cpp`) exposes `get_camera_stream_mode()` and
+  `get_camera_url()` (no device argument: the active machine) and `CameraStreamMode` with
+  `None_`, `HTTP`, `HTTPS`, `HTTP_SNAPSHOT`, `RTSP` (`webrtc` exists in C++ only).
+  `NetworkAgent::get_local_camera_stream_url` calls `get_camera_url`.
+- `MediaPlayCtrl::SetMachineObject` runs on the UI thread at every Monitor update and reads both.
+  An empty URL disables the play button. A changed mode or URL stops a playing stream. For a
+  plugin agent, playback starts only on the user's click (`TogglePlay`); there is no autoplay.
+- HTTP/HTTPS/RTSP play through `wxMediaCtrl3::PlayFfmpeg`: OrcaSlicer's own FFmpeg, multipart
+  MJPEG over http(s) (`deps/FFMPEG/FFMPEG.cmake` enables the http, https protocols, the mpjpeg
+  demuxer and the mjpeg decoder), `rw_timeout` 5 s, no way to add request headers. A frame
+  narrower than 320 px counts as a failure (`onStateChanged`). `HTTP_SNAPSHOT` instead polls the
+  URL from a WebView every 200 ms.
+- Bambuddy 1.2.5.7: `GET /printers/{id}/camera/stream?token=&fps=` (`routes/camera.py`, fps
+  default 10, max 30) answers `multipart/x-mixed-replace; boundary=frame`. The token is the
+  60-minute stream token, checked only when the stream opens. Bambuddy sends the 200 before it
+  reaches the camera: a camera that fails (or an external camera URL it refuses, such as a
+  loopback address) gives an empty body, and the reason is only in Bambuddy's log.
+
+So the agent cannot hand FFmpeg the Bambuddy URL: behind Cloudflare Access or a header-checking
+proxy it would get the login page, and renewing the token in the URL would stop a playing stream
+every hour. The plugin runs a relay (`camera_relay.py`) on `127.0.0.1`, on a random port, with a
+per-session secret path `/<secret>/<printer id>`:
+
+- `get_camera_url()` returns that fixed URL for the connected printer (mode `HTTP`, constant).
+  For each viewer the relay opens Bambuddy's stream through the plugin's client (API key,
+  Cloudflare Access, extra headers, CA settings, no redirects) with a fresh or cached token, and
+  copies it through. A 401 is retried once with a new token (Bambuddy restarted).
+- One viewer at a time; a newer connection makes the older one let go. Stopping the video closes
+  the upstream, so Bambuddy's fan-out tears the camera feed down.
+- Errors before streaming (404, 503, proxy, ...) give FFmpeg a 502, and an upstream that ends
+  without any data counts as "no picture". Either way one warning notification per failure
+  streak; OrcaSlicer shows *Video Stopped* and retries by itself.
+- The relay's thread is started from the first `get_camera_url()` call, and the socket is made on
+  that thread: on 2.5.0-alpha a socket made on the UI thread prompted for the target-less
+  `socket.__new__` (and `socket.bind` would have followed), while plugin threads are not
+  audited. On the beta and
+  rc the load-time request now also names `http://127.0.0.1` when it names a Bambuddy host; the
+  audit matches the `socket.bind` host against that `scheme://host` grant
+  (`PluginAuditManager.cpp` `network_permission_matches`). The URL is empty until the socket is
+  bound, which is the next Monitor update.
 
 ### Agent not started at startup (2.5.0-alpha)
 
@@ -302,8 +349,9 @@ so the plugin is not presented as an official product of either.
 | `GET /auth/me` | any valid key | key validity and the permissions it can actually exercise |
 | `GET /printers/` | printers:read (Read Status) | printer list: id, name, model, location, serial, ip, is_active |
 | `GET /printers/{id}/status` | printers:read | state (`gcode_state`), progress, layers, remaining, temperatures, nozzles, AMS, HMS errors |
-| `POST /printers/camera/stream-token` | camera:view (Read Status) | 60-minute token for snapshots |
+| `POST /printers/camera/stream-token` | camera:view (Read Status) | 60-minute token for snapshots and the stream |
 | `GET /printers/{id}/camera/snapshot?token=` | stream token | JPEG frame |
+| `GET /printers/{id}/camera/stream?token=&fps=` | stream token | MJPEG stream for the Device tab camera (through the local relay) |
 | `POST /library/files` (multipart `file`) | library:upload (Manage Library) | upload; response has `duplicate_of` |
 | `GET /library/files/{id}` | library:read | confirm a cached upload still exists (`file_hash`) |
 | `DELETE /library/files/{id}` | library:delete (Manage Library) | drop a just-uploaded duplicate |
@@ -388,11 +436,13 @@ On the wire it is checked by the unit tests only; there was no real proxy to tes
 
 ## Verification log
 
-Automated (`python3 -m unittest discover -s tests`): 137 tests, 5 of them live tests that skip
+Automated (`python3 -m unittest discover -s tests`): 152 tests, 5 of them live tests that skip
 without `BAMBUDDY_TEST_URL`. They cover:
 - the REST client against a scripted HTTP server: headers, every error class including Cloudflare
   redirect, 403 and 413, timeouts, refused connections, multipart streaming, cancel, camera token
-  reuse;
+  reuse, the camera stream and its 401 retry;
+- the camera relay: pass-through, secret path, 502 on errors, an empty stream, viewer hand-over,
+  stop;
 - matching and the Bambuddy compatibility table;
 - the sliced-3MF reader (real OrcaSlicer exports for X1C and A1 mini, plus synthetic multi-plate
   files);
@@ -486,3 +536,36 @@ Bambuddy 1.2.5.7 with an X1C and an H2D.
 | No audit denial during the session | ✓ |
 | Restart: no prompt; opening the Device tab reconnects the remembered X1C | ✓ |
 | Bambuddy tab status table | ✓ |
+
+Device tab camera (2026-11-02), against a scripted Bambuddy on `127.0.0.2:18001` whose
+`/camera/stream` mirrors 1.2.5.7 (token check, `multipart/x-mixed-replace; boundary=frame`,
+chunked, 640×480 JPEG test frames at 10 fps). Bambuddy is on another host than the relay, so the
+load-time grant for `127.0.0.1` is tested on its own. Each AppImage on Xvfb with a fresh
+`--datadir`.
+
+| Check | 2.5.0-alpha | 2.5.0-beta | 2.5.0-rc |
+|---|---|---|---|
+| Load prompt lists `http://127.0.0.2` and `http://127.0.0.1` | (no load prompt) | ✓ | ✓ |
+| Play button enabled for the connected X1C; video plays ("Playing...") | ✓ | ✓ | ✓ |
+| Stop ends the upstream request at once | ✓ | ✓ | ✓ |
+| No `[AUDIT BLOCKED]`, no prompt while streaming | ✓ (after the fix below) | ✓ | ✓ |
+| Camera failing (503): *Video Stopped [0:2]*, one notification with the reason; play again after recovery works | | | ✓ |
+| Restart: no prompt, plays | | | ✓ |
+
+The first build bound the relay on the UI thread: the alpha then asked about `socket.__new__`
+(answering No left the camera off, with a log line). Binding moved to the relay's thread; all
+three were run again with that build. The "no picture" report was added afterwards and checked
+against the real Bambuddy only (below) and in the unit tests.
+
+Against a real **Bambuddy 1.2.5.7** (Docker, auth on, a key with only Read Status, printers added
+to its database with an external MJPEG camera, since 1.2.5.7 needs MQTT to add one): the stream
+token is minted with that key; the stream opens in 0.03 s with three frames after 0.3 s; through
+the relay the same; an unknown printer is a 404 ("Printer not found", relay 502); a stale token
+recovers through the 401 retry; a camera Bambuddy refuses (loopback URL) gives a 200 with an
+empty body, reported as "no picture".
+
+On the user's real P1S through Bambuddy 1.2.5.7 the camera played (2026-11-02). Not verified: a
+printer camera that is slow to deliver its first frame (FFmpeg's 5 s `rw_timeout`), a stream
+longer than the token's 60 minutes (Bambuddy checks the token only when the stream opens),
+switching between printers in the GUI (unit-tested: one URL per printer), Cloudflare Access in
+front of the stream, Windows and macOS.

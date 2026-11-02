@@ -27,7 +27,10 @@ def fake_orca(storage: str, request_permissions) -> types.ModuleType:
     orca.plugin = lambda cls: cls
     orca.register_capability = lambda cls: None
     orca.request_permissions = request_permissions
-    orca.printer_agent = types.SimpleNamespace(PrinterAgentBase=type("PrinterAgentBase", (), {}))
+    orca.printer_agent = types.SimpleNamespace(
+        PrinterAgentBase=type("PrinterAgentBase", (), {}),
+        CameraStreamMode=types.SimpleNamespace(None_=0, HTTP=1),
+    )
     orca.pages = types.SimpleNamespace(PagesPluginCapabilityBase=type("PagesPluginCapabilityBase", (), {}))
     orca.host = types.SimpleNamespace(plugin=types.SimpleNamespace(storage=lambda: storage))
     return orca
@@ -97,7 +100,7 @@ class LoadTimeRequestTest(unittest.TestCase):
             [{
                 "fs_read": [os.path.join(svc.orca_model_temp_dir(), "*"), os.path.join("/data/exports", "*")],
                 "threading": True,
-                "network": ["http://bambuddy.lan"],
+                "network": ["http://bambuddy.lan", "http://127.0.0.1"],  # the host and the camera relay
                 "process": [str(["open" if sys.platform == "darwin" else "xdg-open", "http://Bambuddy.lan:8000/"])]
                 if sys.platform != "win32" else ["http://Bambuddy.lan:8000/"],
             }],
@@ -130,6 +133,11 @@ class LoadTimeRequestTest(unittest.TestCase):
         origin = self.declare(lambda **kw: calls.append(kw), layout=self.CLOUD, others=[newer, older_but_later])
         self.assertEqual(origin, "https://new.example")
 
+    def test_camera_relay_host_is_not_asked_for_twice(self):
+        calls = []
+        self.declare(lambda **kw: calls.append(kw), settings={"base_url": "http://127.0.0.1:8000"})
+        self.assertEqual(calls[0]["network"], ["http://127.0.0.1"])
+
     def test_beta_without_saved_url_asks_for_no_host(self):
         calls = []
         self.assertEqual(self.declare(lambda **kw: calls.append(kw)), "")
@@ -150,6 +158,17 @@ class LoadTimeRequestTest(unittest.TestCase):
         self.install(layout=self.CLOUD, settings={"base_url": ""}, others=[self.OLD_LOCAL])  # it has its own now
         adapter.adopt_settings_of_other_installation(agent)
         self.assertEqual(saved, [])
+
+    def test_agent_camera_never_raises_into_the_device_tab(self):
+        _, module_file = self.install()
+        adapter = self.adapter_at(module_file)
+        agent = adapter.BambuddyAgent()
+        self.assertEqual(agent.get_camera_stream_mode(), 1)
+        self.assertEqual(agent.get_camera_url(), "")  # not loaded yet
+        agent.service = types.SimpleNamespace(camera_url=lambda: 1 / 0)
+        self.assertEqual(agent.get_camera_url(), "")
+        agent.service = types.SimpleNamespace(camera_url=lambda: "http://127.0.0.1:1/s/1")
+        self.assertEqual(agent.get_camera_url(), "http://127.0.0.1:1/s/1")
 
     def test_alpha_signature_means_unaudited_threads(self):
         def alpha(fs_read=()):  # 2.5.0-alpha: fs_read only

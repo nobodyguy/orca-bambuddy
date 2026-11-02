@@ -9,8 +9,8 @@ server, and watch your printers without leaving the slicer.
   - **Add to queue**: the job waits in Bambuddy until you press Start there.
   - **Store only**: the file goes into the Bambuddy library.
 - **Your Bambuddy printers in OrcaSlicer**: they appear in the Device tab and the print dialog,
-  with live state, temperatures, progress, layers and AMS slots. OrcaSlicer maps filaments to AMS
-  slots and warns when the plate was sliced for a different printer model.
+  with live state, temperatures, progress, layers, AMS slots and the live camera. OrcaSlicer maps
+  filaments to AMS slots and warns when the plate was sliced for a different printer model.
 - **A Bambuddy tab**: every printer at a glance (online/offline, state, job, progress, layer,
   remaining time, errors), a camera snapshot, a connection test, settings, and the sends of this
   session.
@@ -37,7 +37,7 @@ you open Bambuddy's web page on.
 | Discovery | SSDP broadcast, so the same LAN only; across a VPN or router you add the IP by hand | none needed: Bambuddy lists the printers |
 | What happens to a job | fixed per virtual printer: its mode (archive, review, queue, proxy) | chosen per send: Print now, Add to queue, Store only |
 | Target printer | the virtual printer; its settings decide which real printer, if any, gets the job | a real Bambuddy printer, chosen in OrcaSlicer's dialog |
-| Printer status in the slicer | the virtual printer's (in proxy mode, the one printer it forwards) | all your Bambuddy printers, live, plus camera snapshots |
+| Printer status in the slicer | the virtual printer's (in proxy mode, the one printer it forwards) | all your Bambuddy printers, live, plus the live camera and snapshots |
 | Slicers | Bambu Studio and any OrcaSlicer version, no plugin | OrcaSlicer 2.5+ with this plugin (alpha) |
 
 Ports the Virtual Printer needs, per virtual printer (Bambuddy 1.2.5.7):
@@ -84,7 +84,8 @@ time it starts, and a notification says so. Deactivate or remove the old one aft
    - **2.5.0-beta** and **2.5.0-rc** ask once, while the plugin loads, for: creating threads;
      reading OrcaSlicer's temp folder (`<temp>/orcaslicer_<uid>/orcaslicer_model`, where
      OrcaSlicer puts the sliced file for Print/Send) and your export folder (default
-     `~/Downloads`); network access to your Bambuddy host; and running
+     `~/Downloads`); network access to your Bambuddy host and to `http://127.0.0.1` (the
+     plugin's local camera relay, see [Watch your printers](#watch-your-printers)); and running
      `xdg-open <your Bambuddy URL>` (`open` on macOS), which the **Open Bambuddy** links use.
      Answering No stops the plugin from loading. The host is known only after you enter the URL,
      so **after setting or changing the Bambuddy URL, restart OrcaSlicer** and answer Yes again.
@@ -103,7 +104,7 @@ and tick only:
 
 | Permission | Why the plugin needs it |
 |---|---|
-| **Read Status** | list printers, show their status, follow queued jobs, camera snapshots |
+| **Read Status** | list printers, show their status, follow queued jobs, the camera |
 | **Manage Queue** | Print now and Add to queue |
 | **Manage Library** | upload the sliced file |
 
@@ -243,6 +244,13 @@ OrcaSlicer cannot see its AMS, so Bambuddy maps the filaments when it starts the
   maps filaments per nozzle. When Bambuddy does not answer, the tab keeps the last known status
   for 30 seconds, then shows the printer offline and the plugin tells you why; it recovers by
   itself.
+- **Camera in the Device tab**: press play under the camera view. The picture is Bambuddy's live
+  camera stream (10 frames per second), so it works wherever Bambuddy is reachable, including
+  behind Cloudflare Access or a proxy. OrcaSlicer plays it with its own video player, which
+  cannot send the API key or proxy headers, so the plugin hands it a local address
+  (`http://127.0.0.1:<random port>/...`, reachable only from this computer) and forwards the
+  stream from Bambuddy. When the camera fails, OrcaSlicer shows *Video Stopped* and the plugin
+  posts one notification with the reason. Stopping the video ends the stream in Bambuddy too.
 - **Bambuddy tab**: all printers. Click a printer for a camera snapshot (**Refresh camera** for a
   new one). The tab polls only while it is visible.
 - **Notifications** after a send: *queued* (or *waiting for a manual start*), *started printing*,
@@ -321,7 +329,8 @@ saved API key**.
   selected. Any value works.
 - **No printer control yet.** Pause, resume, stop, temperatures, fans and AMS actions from the
   Device tab are reported as not supported (phase 2).
-- **No live camera** in the Device tab; the Bambuddy tab shows snapshots.
+- **Camera settings**: the buttons above the Device tab camera (recording, timelapse, resolution)
+  send printer commands, which the plugin answers as not supported, like the other controls.
 - **"Any printer of this model"** is only available in *Send a sliced file*. OrcaSlicer's print
   dialog always targets one printer.
 - **The plugin cannot export a plate by itself.** OrcaSlicer 2.5's plugin API cannot trigger the
@@ -338,7 +347,6 @@ saved API key**.
 |---|---|
 | Push updates via Bambuddy's WebSocket (`/api/v1/ws`) instead of polling | `Service._run` polling loop, `refresh_status`, `agent_push_status` |
 | Print controls: pause, resume, stop | `Service.agent_command` (Bambu JSON → `POST /printers/{id}/print/pause` etc.; needs **Control Printer**) |
-| Live camera stream | `PrinterAgentBase.get_camera_stream_mode` / `get_camera_url` in `orca_adapter.py`, `GET /printers/{id}/camera/stream` |
 | AMS and filament overview | `printer_view` / page; `bambu_dialect._ams` already converts AMS data |
 | Queue view in the Bambuddy tab | `GET /queue/`, new page section |
 | HMS errors in the Device tab | `bambu_dialect.push_status` (`hms` list) |

@@ -2,8 +2,9 @@
 
 Verified against OrcaSlicer v2.5.0-alpha (git 3880f2c, 2026-10-16): src/slic3r/plugin/*,
 the printerAgent and pages capability bindings, and plugin/host/PluginHostUi.cpp; the
-permission model also against v2.5.0-beta. v2.5.0-rc (af2ffb8c) has the beta's plugin
-sources unchanged. The plugin API is alpha; keep calls to it in this file.
+permission model also against v2.5.0-beta, and the camera against IPrinterAgent.hpp and
+MediaPlayCtrl.cpp of all three. v2.5.0-rc (af2ffb8c) has the beta's plugin sources unchanged.
+The plugin API is alpha; keep calls to it in this file.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import orca
 from . import bambu_dialect as bd
 from . import service as svc
 from . import ui
+from .camera_relay import RELAY_ORIGIN
 
 __version__ = "0.4.0"
 AGENT_CAPABILITY = "Bambuddy printer agent"
@@ -281,16 +283,19 @@ def declare_permissions() -> str | None:
     origin = svc.network_origin(targets.get("base_url", ""))
     # The links to Bambuddy all start this one command (Service.open_bambuddy).
     process = [launch_command(svc.dashboard_url(targets["base_url"]))[1]] if origin else []
+    # The camera relay listens on 127.0.0.1: a socket.bind the audit matches against a
+    # scheme://host grant (PluginAuditManager.cpp, network_permission_matches).
+    network = list(dict.fromkeys([origin, RELAY_ORIGIN])) if origin else []
     try:
         orca.request_permissions(
             fs_read=[os.path.join(f, "*") for f in folders],
             threading=True,
-            network=[origin] if origin else [],
+            network=network,
             process=process,
         )
     except TypeError:
         return None
-    log.info("Permissions requested: %s, network %s, process %s", folders, origin or "none", process)
+    log.info("Permissions requested: %s, network %s, process %s", folders, network or "none", process)
     return origin
 
 
@@ -415,6 +420,19 @@ class BambuddyAgent(orca.printer_agent.PrinterAgentBase):
     def disconnect_printer(self):
         self.service.agent.connected = None
         return bd.OK
+
+    # -- camera: the Device tab plays the URL with OrcaSlicer's own FFmpeg (MediaPlayCtrl::Play,
+    # wxMediaCtrl3::PlayFfmpeg). Both are read on the UI thread at every Device tab update, and
+    # a change of either stops a playing stream (MediaPlayCtrl::SetMachineObject).
+    def get_camera_stream_mode(self):
+        return orca.printer_agent.CameraStreamMode.HTTP  # the relay on 127.0.0.1 is plain HTTP
+
+    def get_camera_url(self):
+        try:
+            return self.service.camera_url() if self.service else ""
+        except Exception:  # noqa: BLE001 - called every second; an empty URL disables the camera
+            log.debug("get_camera_url failed", exc_info=True)
+            return ""
 
     def send_message(self, dev_id, json_str, qos, flag):
         return self.service.agent_command(dev_id, json_str)

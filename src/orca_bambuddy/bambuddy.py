@@ -29,7 +29,7 @@ API_PREFIX = "/api/v1"
 REQUIRED_PERMISSIONS = {
     "printers:read": ("can_read_status", "list printers and show their status"),
     "queue:read": ("can_read_status", "follow queued jobs"),
-    "camera:view": ("can_read_status", "show camera snapshots"),
+    "camera:view": ("can_read_status", "show the camera"),
     "library:upload": ("can_manage_library", "upload files"),
     "queue:create": ("can_queue", "queue and start prints"),
 }
@@ -229,7 +229,7 @@ class BambuddyClient:
             url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
         return url
 
-    def _request(
+    def _send(
         self,
         method: str,
         path: str,
@@ -240,7 +240,9 @@ class BambuddyClient:
         headers: dict | None = None,
         auth: bool = True,
         timeout: float | None = None,
-    ) -> _Response:
+    ):
+        """Send a request and return the open response, its body not read yet. Raises
+        BambuddyError for transport failures and for every status other than 2xx."""
         if not self.base_url:
             raise BambuddyError("bad_url", "The Bambuddy URL is not set.")
         all_headers = self._headers(auth)
@@ -252,20 +254,29 @@ class BambuddyClient:
         url = self._url(path, params)
         req = urllib.request.Request(url, data=data, headers=all_headers, method=method)
         try:
-            with self._opener.open(req, timeout=timeout or self.conn.timeout) as resp:
-                result = _Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read())
+            resp = self._opener.open(req, timeout=timeout or self.conn.timeout)
         except urllib.error.HTTPError as e:
             body = e.read() if e.fp is not None else b""
-            result = _Response(e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, body)
+            error = _Response(e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, body)
         except BambuddyError:
             raise
         except Exception as e:  # noqa: BLE001 - every transport failure is mapped to a message
             raise self._transport_error(e) from e
-        if "cf-ray" in result.headers:
+        else:
+            if "cf-ray" in {k.lower() for k in resp.headers.keys()}:
+                self.behind_cloudflare = True
+            return resp
+        if "cf-ray" in error.headers:
             self.behind_cloudflare = True
-        if result.status >= 300:
-            raise self._http_error(result)
-        return result
+        raise self._http_error(error)
+
+    def _request(self, method: str, path: str, **kwargs) -> _Response:
+        resp = self._send(method, path, **kwargs)
+        try:
+            with resp:
+                return _Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read())
+        except Exception as e:  # noqa: BLE001 - e.g. a timeout while reading the body
+            raise self._transport_error(e) from e
 
     def _json(self, method: str, path: str, **kwargs):
         resp = self._request(method, path, **kwargs)
@@ -407,23 +418,53 @@ class BambuddyClient:
     def printer_status(self, printer_id: int, timeout: float | None = None) -> dict:
         return self._json("GET", f"/printers/{int(printer_id)}/status", timeout=timeout)
 
-    def camera_snapshot(self, printer_id: int) -> bytes:
-        """One JPEG frame. The snapshot route takes a stream token instead of the API key."""
+    def _stream_token(self) -> str:
+        """The token the camera routes take instead of the API key."""
         token = self._camera_token
         if token is None or token[1] < time.monotonic():
             # Tokens live 60 minutes on the server; renew a little earlier.
             data = self._json("POST", "/printers/camera/stream-token")
             token = (data["token"], time.monotonic() + 50 * 60)
             self._camera_token = token
+        return token[0]
+
+    def camera_snapshot(self, printer_id: int) -> bytes:
+        """One JPEG frame."""
         try:
             resp = self._request(
-                "GET", f"/printers/{int(printer_id)}/camera/snapshot", params={"token": token[0]}, timeout=30
+                "GET", f"/printers/{int(printer_id)}/camera/snapshot", params={"token": self._stream_token()}, timeout=30
             )
         except BambuddyError as e:
             if e.status == 401:
                 self._camera_token = None
             raise
         return resp.body
+
+    def open_camera_stream(self, printer_id: int, fps: int = 10):
+        """The live camera as MJPEG (multipart/x-mixed-replace), open for reading. Close it when
+        done: Bambuddy stops the printer's camera feed after its last viewer leaves.
+
+        The token is checked only when the stream opens, so a stream outlives it."""
+        for attempt in (1, 2):
+            try:
+                resp = self._send(
+                    "GET",
+                    f"/printers/{int(printer_id)}/camera/stream",
+                    params={"token": self._stream_token(), "fps": int(fps)},
+                    headers={"Accept": "multipart/x-mixed-replace, */*"},
+                )
+                break
+            except BambuddyError as e:
+                if e.status != 401:
+                    raise
+                self._camera_token = None  # e.g. Bambuddy restarted and forgot its tokens
+                if attempt == 2:
+                    raise
+        ctype = resp.headers.get("Content-Type", "")
+        if not ctype.startswith(("multipart/", "image/")):
+            resp.close()
+            raise BambuddyError("bad_url", f"Bambuddy did not answer with a camera stream (got {ctype or 'no content type'}).")
+        return resp
 
     # ---- library and queue ----------------------------------------------------
 

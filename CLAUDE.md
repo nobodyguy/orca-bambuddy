@@ -30,6 +30,8 @@ User docs are in `README.md`; research, OrcaSlicer internals and the verificatio
   no redirect following).
 - `bambu_dialect.py`: Bambuddy data to the Bambu-style JSON OrcaSlicer's device layer parses
   (SSDP records, `push_status`, two-nozzle fields).
+- `camera_relay.py`: the local HTTP relay on 127.0.0.1 that the Device tab camera plays from
+  (OrcaSlicer's FFmpeg cannot send the API key or proxy headers).
 - `matching.py`: printer/model matching (Bambuddy's model table). `sliced3mf.py`: `.gcode.3mf`
   reader. `ui.py`: HTML of the tab, the settings form and the action chooser.
 - `tests/`: `fakes.py` has a scripted Bambuddy server (`FakeServer`, `bambuddy_routes`,
