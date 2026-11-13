@@ -106,7 +106,7 @@ and tick only:
 |---|---|
 | **Read Status** | list printers, show their status, follow queued jobs, the camera |
 | **Manage Queue** | Print now and Add to queue |
-| **Manage Library** | upload the sliced file |
+| **Manage Library** | upload the sliced file and optional full project backup |
 
 Leave everything else, including **Control Printer**, unticked. You can also limit the key to
 some printers. Copy the key: Bambuddy shows it only once.
@@ -178,6 +178,8 @@ Either enter the certificate (PEM) in **CA file**, or untick **Verify the server
 | Extra HTTP headers | empty | `Name: value` per line, for other reverse proxies; secret |
 | Default action | Print now | preselected choice; the Send button never preselects Print now |
 | Ask on every send | on | show the Print now / Add to queue / Store only choice each time |
+| Full project backup | off | back up the editable project, including unsaved changes, on native Print/Send |
+| Project backup limit (MB) | 0 | maximum full-project backup size; 0 = unlimited |
 | Printer choice | preselect best match | for *Send a sliced file*: preselect, or always choose yourself |
 | Remember printer | on | remember the printer per printer preset (*Send a sliced file*) |
 | Identical file in library | reuse | do not upload a file Bambuddy already has from this plugin |
@@ -235,6 +237,26 @@ The **Send** entry of the Print button's menu ("send to printer storage") works 
 Print options from OrcaSlicer's dialog (bed levelling, flow and vibration calibration, timelapse,
 layer inspection, AMS mapping) are passed to Bambuddy's queue. When the printer is offline or busy,
 OrcaSlicer cannot see its AMS, so Bambuddy maps the filaments when it starts the job.
+
+### Back up the full project when sending
+
+Enable **Full project backup** in the Bambuddy settings to upload an editable project 3MF every
+time you use OrcaSlicer's native **Print** or **Send** button. For a job named `Bracket`, Bambuddy's
+**File Manager** receives `Bracket_source.3mf` as well as the sliced `Bracket.gcode.3mf`.
+
+The source is a fresh copy of the whole open project, including all plates, model geometry,
+painting, settings and unsaved edits. You do not need to save the project first, and its local
+filename and saved state stay the same. The backup is uploaded before the sliced file is queued;
+if export or upload fails, nothing is queued. The same per-file upload limit and identical-file
+policy apply to both files. No additional API permission is needed.
+
+**Project backup limit (MB)** sets a separate maximum for the source 3MF; `0` means unlimited
+by default. If the project exceeds this limit, no file is uploaded and no print is queued. The
+overall **Upload limit (MB)**, including its Cloudflare default, still applies to both files.
+
+The backup stays in **File Manager**; it is not automatically attached to the print's Archive
+Source field. **Send a sliced file** in the Bambuddy tab cannot back up the source, since that
+file may belong to a different project from the one currently open.
 
 ## Watch your printers
 

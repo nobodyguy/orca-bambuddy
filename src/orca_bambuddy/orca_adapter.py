@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from concurrent.futures import Future, TimeoutError
 
 import orca
 
@@ -451,7 +452,39 @@ class BambuddyAgent(orca.printer_agent.PrinterAgentBase):
             title = self.service.agent.job_titles.get(params.dev_id)
             return choose_action(svc.job_name_from_params(params, title), target, default, cancelled)
 
-        return self.service.agent_job(kind, params, update, cancelled, choose)
+        return self.service.agent_job(kind, params, update, cancelled, choose,
+                                      lambda path: self._export_project(path, cancelled))
+
+    def _export_project(self, path, cancelled):
+        # PluginHostApp::export_3mf_copy requires the UI thread. The agent's
+        # QueueOnMainFn queues our callback there; the send thread waits without the GIL.
+        service = self.service
+        queue_on_main = service.agent.callbacks.get("queue_on_main")
+        if queue_on_main is None:
+            raise RuntimeError("OrcaSlicer did not provide its main-thread callback")
+        result = Future()
+
+        def export():
+            if not result.set_running_or_notify_cancel():
+                return
+            try:
+                orca.host.plater().export_3mf_copy(path)
+            except Exception as e:  # noqa: BLE001 - report host export/audit failures to the send
+                result.set_exception(e)
+            else:
+                result.set_result(None)
+
+        queue_on_main(export)
+        while True:
+            if (cancelled() or service.stopped) and result.cancel():
+                raise svc.Cancelled()
+            try:
+                return result.result(timeout=0.2)
+            except TimeoutError:
+                # Once the UI starts exporting, wait for it before deleting its temp file.
+                if result.done():
+                    return result.result()
+                continue
 
     def on_lifecycle_event(self, event, ctx):
         # OrcaSlicer raises these on the job thread right before start_local_print() /

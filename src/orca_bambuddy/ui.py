@@ -56,6 +56,10 @@ _SETTINGS_FORM = """
   </select>
   <label for="ask_action">Ask on every send</label>
   <label><input type="checkbox" id="ask_action"> Show the action choice when Print or Send is pressed</label>
+  <label for="backup_project">Full project backup</label>
+  <label><input type="checkbox" id="backup_project"> Back up full project on Print/Send (includes unsaved changes)</label>
+  <label for="backup_project_limit_mb">Project backup limit (MB)</label>
+  <div><input type="number" id="backup_project_limit_mb" min="0"><span class="muted"> 0 = unlimited</span></div>
   <label for="printer_selection">Printer choice</label>
   <select id="printer_selection">
     <option value="auto">Preselect the best matching printer</option>
@@ -86,7 +90,7 @@ _SETTINGS_FORM = """
 _SETTINGS_JS = """
 const SECRET = ["api_key", "cf_client_secret", "extra_headers"];
 const FIELDS = ["base_url","api_key","cf_access_enabled","cf_client_id","cf_client_secret","extra_headers","default_action",
-  "ask_action","printer_selection","remember_printer","duplicate_policy","export_folder","verify_tls","ca_file",
+  "ask_action","backup_project","backup_project_limit_mb","printer_selection","remember_printer","duplicate_policy","export_folder","verify_tls","ca_file",
   "timeout_s","upload_limit_mb","poll_interval_s"];
 function fillSettings(s) {
   for (const k of FIELDS) {
@@ -354,7 +358,8 @@ const shown = Object.assign({}, current);
 for (const k of SECRET) { shown["has_" + k] = !!current[k]; }
 shown.extra_header_names = (current.extra_headers || "").split("\n").map(l => l.split(":")[0].trim()).filter(Boolean);
 fillSettings(Object.assign({default_action: "print", ask_action: true, printer_selection: "auto", remember_printer: true,
-  duplicate_policy: "reuse", verify_tls: true, timeout_s: 15, upload_limit_mb: 0, poll_interval_s: 5}, shown));
+  backup_project: false, backup_project_limit_mb: 0, duplicate_policy: "reuse", verify_tls: true,
+  timeout_s: 15, upload_limit_mb: 0, poll_interval_s: 5}, shown));
 document.getElementById("save").onclick = () => {
   const next = Object.assign({}, current, readSettings());
   for (const k of SECRET) if (!next[k]) next[k] = current[k] || "";
