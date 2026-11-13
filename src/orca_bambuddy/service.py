@@ -15,10 +15,12 @@ import json
 import logging
 import os
 import queue
+import tempfile
 import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
+from typing import Callable
 
 from . import bambu_dialect as bd
 from . import matching, sliced3mf
@@ -48,6 +50,8 @@ DEFAULT_SETTINGS = {
     "timeout_s": 15,
     "default_action": "print",  # print | queue | store
     "ask_action": True,  # ask on every Print/Send, with default_action preselected
+    "backup_project": False,  # native Print/Send: save the editable project in the library too
+    "backup_project_limit_mb": 0,  # 0: unlimited; the overall upload limit still applies
     "printer_selection": "auto",  # auto: preselect the best match | manual: always choose
     "remember_printer": True,
     "export_folder": "",  # empty: ~/Downloads
@@ -289,6 +293,7 @@ class SendJob:
     remember_key: str | None = None
     remember_target: str | None = None
     name: str | None = None  # file name in Bambuddy; default: the file's own name
+    export_project: Callable[[str], None] | None = None  # native Print/Send project snapshot
 
 
 @dataclass
@@ -728,10 +733,49 @@ class Service:
                 "plan). Reduce the file size, or raise 'Upload limit' if your Cloudflare plan allows more.",
             )
 
-        file_id, how = self._upload(client, info.path, name, progress, cancelled)
-        if job.action == "store":
-            return {"ok": True, "message": f"{name} {how} the Bambuddy library.", "url": client.web_url("/files"), "file_id": file_id}
+        backup_message = ""
+        sliced_progress = progress
+        if job.export_project is not None:
+            if not self.state.path:
+                raise BambuddyError("backup_failed", "Full project backup needs the plugin's storage folder. No print was queued.")
+            source_name = name.removesuffix(".gcode.3mf").removesuffix(".3mf") + "_source.3mf"
+            fd, source_path = tempfile.mkstemp(prefix="project-", suffix=".3mf", dir=os.path.dirname(self.state.path))
+            os.close(fd)
+            try:
+                progress(0, "Exporting full project")
+                if cancelled():
+                    raise Cancelled()
+                try:
+                    job.export_project(source_path)
+                except Cancelled:
+                    raise
+                except Exception as e:  # noqa: BLE001 - includes OrcaSlicer's export/audit errors
+                    raise BambuddyError("backup_failed", f"Full project export failed: {e}. No print was queued.") from e
+                if cancelled():
+                    raise Cancelled()
+                source_size = os.path.getsize(source_path)
+                backup_limit = int(self.cfg["backup_project_limit_mb"])
+                if backup_limit and source_size > backup_limit * 1024 * 1024:
+                    raise BambuddyError("too_large", f"{source_name} exceeds the project backup limit of {backup_limit} MB. No print was queued.")
+                if limit and source_size > limit * 1024 * 1024:
+                    raise BambuddyError("too_large", f"{source_name} exceeds the upload limit of {limit} MB. No print was queued.")
+                self._upload(client, source_path, source_name,
+                             lambda pct, text: progress(pct // 2, "Backing up full project: " + text), cancelled)
+            finally:
+                # TemporaryDirectory cleanup uses os.scandir(fd), whose target-less audit
+                # event OrcaSlicer refuses. This export owns just one file.
+                os.unlink(source_path)
+            backup_message = f" Full project backed up as {source_name}."
+            sliced_progress = lambda pct, text: progress(50 + pct // 2, text)
 
+        if cancelled():
+            raise Cancelled()
+        file_id, how = self._upload(client, info.path, name, sliced_progress, cancelled)
+        if job.action == "store":
+            return {"ok": True, "message": f"{name} {how} the Bambuddy library." + backup_message, "url": client.web_url("/files"), "file_id": file_id}
+
+        if cancelled():
+            raise Cancelled()
         plates = [p.index for p in info.plates] if job.plate is None else [job.plate]
         manual = job.action == "queue"
         progress(100, "Adding to the Bambuddy queue")
@@ -760,7 +804,7 @@ class Service:
             msg = f"{what} added to the Bambuddy queue for {job.label}; start it in Bambuddy when ready."
         else:
             msg = f"{what} sent to {job.label} via Bambuddy; it starts as soon as the printer is free."
-        return {"ok": True, "message": msg, "url": client.web_url("/queue"), "queue_ids": [i["id"] for i in items]}
+        return {"ok": True, "message": msg + backup_message, "url": client.web_url("/queue"), "queue_ids": [i["id"] for i in items]}
 
     def _check_target(self, client: BambuddyClient, job: SendJob, info: sliced3mf.SlicedFile) -> None:
         if job.printer_id is None:
@@ -1058,7 +1102,7 @@ class Service:
         printer = bd.find_printer(self._printers, dev)
         return (printer or {}).get("name") or dev
 
-    def agent_job(self, kind: str, params, update, cancelled, choose) -> int:
+    def agent_job(self, kind: str, params, update, cancelled, choose, export_project=None) -> int:
         """start_local_print / start_send_gcode_to_sdcard on OrcaSlicer's job thread.
 
         ``kind`` is "print" (Print button) or "send" (Send button). ``choose(default)`` asks
@@ -1087,6 +1131,7 @@ class Service:
             plate=plate if plate > 0 else None,
             options=bd.queue_options(params) if kind == "print" else {},
             name=job_name_from_params(params, self.agent.job_titles.pop(dev, None)),
+            export_project=export_project if self.cfg["backup_project"] else None,
         )
 
         events: queue.Queue = queue.Queue()

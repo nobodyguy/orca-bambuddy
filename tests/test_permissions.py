@@ -3,9 +3,11 @@
 import importlib
 import json
 import os
+import queue
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import urllib.error
@@ -338,3 +340,57 @@ class AgentNotStartedTest(unittest.TestCase):
         self.agent.service.agent.live = False
         self.agent.on_lifecycle_event("NewProject", self.ctx)
         self.assertEqual(self.host.notes, [])
+
+
+class ProjectExportTest(unittest.TestCase):
+    def setUp(self):
+        self.callbacks = queue.Queue()
+        self.orca = fake_orca("", lambda **kw: None)
+        self.export = mock.Mock()
+        self.orca.host.plater = lambda: types.SimpleNamespace(export_3mf_copy=self.export)
+        patcher = mock.patch.dict(sys.modules, {"orca": self.orca})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        sys.modules.pop("orca_bambuddy.orca_adapter", None)
+        self.addCleanup(sys.modules.pop, "orca_bambuddy.orca_adapter", None)
+        adapter = importlib.import_module("orca_bambuddy.orca_adapter")
+        self.agent = adapter.BambuddyAgent()
+        self.agent.service = types.SimpleNamespace(
+            stopped=False, agent=types.SimpleNamespace(callbacks={"queue_on_main": self.callbacks.put}),
+        )
+
+    def run_export(self, cancelled=lambda: False):
+        results = queue.Queue()
+
+        def run():
+            try:
+                self.agent._export_project("project.3mf", cancelled)
+            except Exception as e:
+                results.put(e)
+            else:
+                results.put(None)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        self.addCleanup(worker.join, 2)
+        return self.callbacks.get(timeout=2), results
+
+    def test_export_runs_on_main_thread_and_includes_host_errors(self):
+        main_thread = threading.get_ident()
+        self.export.side_effect = lambda path: self.assertEqual(threading.get_ident(), main_thread)
+        callback, results = self.run_export()
+        self.export.assert_not_called()
+        callback()
+        self.assertIsNone(results.get(timeout=2))
+        self.export.assert_called_once_with("project.3mf")
+
+        self.export.side_effect = PermissionError("Export permission denied")
+        callback, results = self.run_export()
+        callback()
+        self.assertIsInstance(results.get(timeout=2), PermissionError)
+
+    def test_cancelled_pending_export_never_writes_its_deleted_folder(self):
+        callback, results = self.run_export(cancelled=lambda: True)
+        self.assertIsInstance(results.get(timeout=2), svc.Cancelled)
+        callback()
+        self.export.assert_not_called()

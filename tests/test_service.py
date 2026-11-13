@@ -108,6 +108,109 @@ class SendTest(ServiceTestBase):
         self.assertEqual(self.queued(), [])
         self.assertIn("library", result["message"])
 
+    def export_project(self, path):
+        with zipfile.ZipFile(path, "w") as project:
+            project.writestr("3D/3dmodel.model", "<model><mesh>editable geometry</mesh></model>")
+            project.writestr("Metadata/project_settings.config", '{"unsaved_setting": true}')
+
+    def test_full_project_is_uploaded_before_the_sliced_file(self):
+        paths = []
+
+        def export(path):
+            paths.append(path)
+            self.export_project(path)
+
+        # OrcaSlicer denies the target-less os.scandir(fd) audit event used by
+        # TemporaryDirectory cleanup. Export cleanup must work without scanning.
+        with mock.patch("os.scandir", side_effect=PermissionError("scandir audit denied")):
+            result, progress = self.send(export_project=export)
+        self.assertTrue(result["ok"], result)
+        self.assertIn(b'filename="cube_x1c_source.3mf"', self.state["files"][1])
+        self.assertIn(b"editable geometry", self.state["files"][1])
+        self.assertIn(b"unsaved_setting", self.state["files"][1])
+        self.assertIn(b'filename="cube_x1c.gcode.3mf"', self.state["files"][2])
+        self.assertEqual(self.queued()[0]["library_file_id"], 2)
+        self.assertIn("Full project backed up", result["message"])
+        self.assertFalse(os.path.exists(paths[0]))
+        self.assertEqual(progress, sorted(progress))
+
+    def test_project_backup_also_applies_to_store_only(self):
+        result, _ = self.send(action="store", export_project=self.export_project)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(self.state["files"]), 2)
+        self.assertEqual(self.queued(), [])
+        self.assertIn("Full project backed up", result["message"])
+
+    def test_failed_project_export_does_not_upload_or_queue(self):
+        paths = []
+
+        def denied(path):
+            paths.append(path)
+            raise PermissionError("Project export was denied")
+
+        result, _ = self.send(export_project=denied)
+        self.assertFalse(result["ok"])
+        self.assertIn("Project export was denied", result["message"])
+        self.assertEqual(self.state["files"], {})
+        self.assertEqual(self.queued(), [])
+        self.assertFalse(os.path.exists(paths[0]))
+
+    def test_failed_project_upload_does_not_queue(self):
+        self.server.route("POST", "/api/v1/library/files", status=403, body={"detail": "Manage Library required"})
+        result, _ = self.send(export_project=self.export_project)
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.queued(), [])
+        self.assertEqual(sum(r["method"] == "POST" for r in self.server.requests), 1)
+
+    def test_project_upload_limit_is_checked_before_queuing(self):
+        self.service.cfg["upload_limit_mb"] = 1
+
+        def large_project(path):
+            with open(path, "wb") as project:
+                project.write(b"x" * (1024 * 1024 + 1))
+
+        result, _ = self.send(export_project=large_project)
+        self.assertFalse(result["ok"])
+        self.assertIn("cube_x1c_source.3mf", result["message"])
+        self.assertIn("upload limit", result["message"])
+        self.assertEqual(self.state["files"], {})
+        self.assertEqual(self.queued(), [])
+
+    def test_separate_project_backup_limit_is_checked_before_upload(self):
+        self.service.cfg["backup_project_limit_mb"] = 1
+
+        def large_project(path):
+            with open(path, "wb") as project:
+                project.write(b"x" * (1024 * 1024 + 1))
+
+        result, _ = self.send(export_project=large_project)
+        self.assertFalse(result["ok"])
+        self.assertIn("project backup limit of 1 MB", result["message"])
+        self.assertEqual(self.state["files"], {})
+        self.assertEqual(self.queued(), [])
+
+    def test_project_backup_limit_allows_exact_boundary(self):
+        self.service.cfg["backup_project_limit_mb"] = 1
+
+        def project_at_limit(path):
+            with open(path, "wb") as project:
+                project.write(b"x" * (1024 * 1024))
+
+        result, _ = self.send(export_project=project_at_limit)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.queued()[0]["library_file_id"], 2)
+
+    def test_project_backup_limit_is_unlimited_by_default(self):
+        self.assertEqual(self.service.cfg["backup_project_limit_mb"], 0)
+
+        def large_project(path):
+            with open(path, "wb") as project:
+                project.write(b"x" * (1024 * 1024 + 1))
+
+        result, _ = self.send(export_project=large_project)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.queued()[0]["library_file_id"], 2)
+
     def test_any_printer_of_model(self):
         result, _ = self.send(printer_id=None, target_model="X1C", label="Any X1C")
         self.assertTrue(result["ok"])
@@ -298,10 +401,10 @@ class AgentTest(ServiceTestBase):
         self.assertEqual(self.service.agent_command("d", '{"pushing":{"command":"pushall"}}'), bd.OK)
         self.assertEqual(self.service.agent_command("d", '{"print":{"command":"pause"}}'), bd.ERR_NOT_SUPPORTED)
 
-    def run_job(self, kind="print", choose=lambda default: default, **kw):
+    def run_job(self, kind="print", choose=lambda default: default, export_project=None, **kw):
         self.service.agent_announce()
         updates = []
-        code = self.service.agent_job(kind, self.params(**kw), lambda *a: updates.append(a), lambda: False, choose)
+        code = self.service.agent_job(kind, self.params(**kw), lambda *a: updates.append(a), lambda: False, choose, export_project)
         return code, updates
 
     def test_print_button_queues_with_dialog_options(self):
@@ -326,6 +429,19 @@ class AgentTest(ServiceTestBase):
         self.assertEqual(code, bd.OK)
         self.assertEqual(seen, ["queue"])
         self.assertTrue(self.queued()[0]["manual_start"])
+
+    def test_native_send_backs_up_project_when_enabled(self):
+        self.service.cfg["backup_project"] = True
+        code, _ = self.run_job("send", export_project=lambda path: SendTest.export_project(self, path))
+        self.assertEqual(code, bd.OK)
+        self.assertIn(b'filename="cube_source.3mf"', self.state["files"][1])
+        self.assertEqual(self.queued()[0]["library_file_id"], 2)
+        self.assertTrue(self.queued()[0]["manual_start"])
+
+    def test_backup_disabled_does_not_export_project(self):
+        code, _ = self.run_job(export_project=lambda path: self.fail("Unexpected project export"))
+        self.assertEqual(code, bd.OK)
+        self.assertEqual(len(self.state["files"]), 1)
 
     def test_user_cancels_the_choice(self):
         code, _ = self.run_job(choose=lambda default: None)

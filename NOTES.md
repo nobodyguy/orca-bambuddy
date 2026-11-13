@@ -428,6 +428,43 @@ On the wire it is checked by the unit tests only; there was no real proxy to tes
 
 ## Gaps and workarounds
 
+### Full project backup on native Print/Send
+
+`PluginHostApp.cpp` in the 2.5.0-alpha and rc tags exposes
+`orca.host.plater().export_3mf_copy(path)`. It exports the current project with unsaved edits,
+without changing its name or saved state, and requires the UI thread. The existing agent
+`queue_on_main` callback (`QueueOnMainFn` in `bambu_networking.hpp`) schedules that export from
+the send worker. A Future carries its result back. Cancelling a pending export prevents the
+queued callback from writing; once export starts, the worker waits before removing its file.
+
+The opt-in `backup_project` setting applies only to native Print/Send, including their Store
+only action. The source copy is written inside plugin storage (already an allowed filesystem
+root), uploaded to `/library/files` with the existing Manage Library scope, and removed locally.
+`backup_project_limit_mb` caps the exported source size before upload; its default `0` is
+unlimited. The existing upload limit is checked separately and still applies to both files.
+The sliced file is uploaded and queued only after the backup succeeds. The archive-by-name
+source API is deliberately unused: queued jobs may not have an archive yet, and a name match
+could attach a new backup to an older print.
+
+Use `mkstemp` and `unlink` for this one owned file. On the installed 2.5.0 Flatpak,
+`TemporaryDirectory` cleanup calls `os.scandir(fd)`, whose target-less audit event is denied;
+its permission-error recovery then recurses. No directory scan is needed to clean up an export.
+
+Regression coverage: source geometry/settings upload before the sliced file; Store only;
+export denial, upload denial and source size limits preventing queue creation; opt-in native
+Send and disabled behavior; UI-thread dispatch, propagated export errors and cancelled callbacks.
+Tests use a scripted local HTTP server and no production printer.
+
+Flatpak smoke check (2026-11-13): installed OrcaSlicer 2.5.0, source build
+`40ecc66f78ed72dc368e0c1ebe40d77f00cc8a19`, on Xvfb with a fresh `--datadir` and a scripted
+local Bambuddy server. A test-only page button invoked the real agent `_job("send", ...)`
+on a plugin thread with a sliced fixture; the current open project contained an imported cube
+that had never been saved. The host-provided `queue_on_main` exported it successfully. The
+uploaded source ZIP contained the 12-triangle editable mesh and `project_settings.config`;
+the queue referenced the separate sliced file with `manual_start=true`, the agent returned 0,
+and no temporary source file remained. The test hook is not in the distributable wheel.
+The native Send dialog itself and older OrcaSlicer binaries were not exercised in this check.
+
 | Gap (OrcaSlicer 2.5.0-alpha) | Workaround |
 |---|---|
 | A plugin cannot trigger or observe the export of a sliced `.gcode.3mf`. `Plater.export_3mf_copy()` writes a project without G-code; `GCodeExportFinished` reports only the raw temp G-code; "Export plate sliced file" fires no event. | Primary path: the printer agent, which receives the packaged file from OrcaSlicer's own Print/Send job. Fallback: the user exports, then sends the file from the Bambuddy tab (recent files in the export folder, or a path). |
